@@ -6,6 +6,7 @@ use std::{
 };
 
 use acdc::{Attestation, Hashed, Signed};
+use anyhow::Context;
 use openssl::{
     pkey::{PKey, Private},
     sign::Signer,
@@ -24,11 +25,18 @@ use warp::{
 
 #[derive(Debug, StructOpt)]
 struct Opts {
-    #[structopt(short = "k", long, default_value = "acdcd.key")]
+    /// Path to private key PEM file.
+    /// If it doesn't exist it will be generated with a random key.
+    #[structopt(short = "k", long = "priv-key", default_value = "acdcd.key")]
     priv_key_path: PathBuf,
-    #[structopt(short = "K", long, default_value = "pub_keys.json")]
+
+    /// Path to public keys JSON file.
+    /// The file should contain a map of user IDs and their base64-encoded ED25519 public keys
+    #[structopt(short = "K", long = "pub-keys", default_value = "pub_keys.json")]
     pub_keys_path: PathBuf,
-    #[structopt(short = "p", long, default_value = "13434")]
+
+    /// Daemon API port.
+    #[structopt(short, long, default_value = "13434")]
     port: u16,
 }
 
@@ -54,7 +62,11 @@ type KeyDB = Arc<RwLock<HashMap<String, acdc::PubKey>>>;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let Opts { priv_key_path, pub_keys_path, port } = Opts::from_args();
+    let Opts {
+        priv_key_path,
+        pub_keys_path,
+        port,
+    } = Opts::from_args();
 
     let priv_key = load_priv_key(&priv_key_path).await?;
     let pub_keys = Arc::new(RwLock::new(load_pub_keys(&pub_keys_path).await?));
@@ -161,29 +173,52 @@ async fn attest_receive(
 
 async fn load_priv_key(path: &Path) -> anyhow::Result<PKey<Private>> {
     let key = if path.exists() {
-        let mut key_file = File::open(path).await?;
+        let mut key_file = File::open(path)
+            .await
+            .with_context(|| format!("Can't open priv key file {:?}", path))?;
         let mut key_pem = Vec::new();
-        key_file.read_to_end(&mut key_pem).await?;
-        PKey::private_key_from_pem(&key_pem)?
+        key_file
+            .read_to_end(&mut key_pem)
+            .await
+            .context("Can't read priv key file")?;
+        PKey::private_key_from_pem(&key_pem).context("Can't parse priv key file")?
     } else {
-        let key = PKey::generate_ed25519()?;
-        let key_pem = key.private_key_to_pem_pkcs8()?;
-        let mut key_file = File::create(&path).await?;
-        key_file.write_all(&key_pem).await?;
+        let key = PKey::generate_ed25519().context("Can't generate priv key")?;
+        let key_pem = key
+            .private_key_to_pem_pkcs8()
+            .context("Can't encode priv key")?;
+        let mut key_file = File::create(&path)
+            .await
+            .with_context(|| format!("Can't create priv key file {:?}", path))?;
+        key_file
+            .write_all(&key_pem)
+            .await
+            .context("Can't write to priv key file")?;
         key
     };
     Ok(key)
 }
 
 async fn load_pub_keys(path: &Path) -> anyhow::Result<HashMap<String, acdc::PubKey>> {
-    let mut keys_file = File::open(path).await?;
+    let mut keys_file = File::open(path)
+        .await
+        .with_context(|| format!("Can't open pub keys file {:?}", path))?;
     let mut json = String::new();
-    keys_file.read_to_string(&mut json).await?;
-    let json = "";
-    let keys: HashMap<String, String> = serde_json::from_str(json)?;
+    keys_file
+        .read_to_string(&mut json)
+        .await
+        .context("Can't read pub keys file")?;
+    let keys: HashMap<String, String> =
+        serde_json::from_str(&json).context("Can't parse pub keys file")?;
     let keys = keys
         .into_iter()
-        .map(|(id, key)| Ok((id, acdc::PubKey::ED25519(base64::decode(key)?))))
-        .collect::<Result<_,anyhow::Error>>()?;
+        .map(|(id, key)| {
+            let key = acdc::PubKey::ED25519(
+                base64::decode(key).with_context(|| format!("Invalid base64 for {:?}", id))?,
+            );
+            Ok((id, key))
+        })
+        .collect::<Result<_, anyhow::Error>>()
+        .context("Can't parse pub keys")?;
     Ok(keys)
 }
