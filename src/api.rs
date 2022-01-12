@@ -12,6 +12,7 @@ use warp::Filter;
 enum ApiError {
     SigningError,
     InvalidAttestation,
+    VerificationFailed,
 }
 
 impl warp::Reply for ApiError {
@@ -126,7 +127,7 @@ async fn attest_receive(
         let pub_keys = pub_keys.read().await;
         attest
             .verify(&pub_keys)
-            .map_err(|_| ApiError::InvalidAttestation)?;
+            .map_err(|_| ApiError::VerificationFailed)?;
     }
     {
         let mut attest_db = attest_db.write().await;

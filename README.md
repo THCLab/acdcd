@@ -34,8 +34,9 @@ Content-Type: application/json
     "s": "E46jrVPTzlSkUPqGGeIZ8a8FWS7a6s4reAXRZOkogZ2A",
     "v": "ACDC10JSON00011c_"
 }
+```
 
-
+```http
 HTTP/1.1 200 OK
 Content-Type: application/json
 
@@ -67,9 +68,10 @@ Content-Type: text/plain
     "r":[],
     "d":"E5NscgYCVjzrCpmBu8ztQND8S_1h3XLtqh0c0vi9gxwo"
 }
--0B+LsV0MWSqowHYQ+Hg5yvR6GIb6mPQ4orQ4tPRMNCcnEkYCtZELqicA216bucHOlP5m0dZorojkZY+tgLD3v6DA==
+-0BxXmL+60He7UM+UZ4JXe2ynTsOjFfqbAT9JsBWwPHVk68oa/aM5jbe4don+DQFxvzqO0Y7W4TCQsEQ+7bZokBDQ==
+```
 
-
+```http
 HTTP/1.1 200 OK
 Content-Type: application/json
 
@@ -84,12 +86,21 @@ Content-Type: application/json
 }
 ```
 
+Needs key in `pub_keys.json`:
+
+```json
+{
+  "did:keri:EmkPreYpZfFk66jpf3uFv7vklXKhzBrAqjsKAn2EDIPM": "MTlQy08gHxzlNL/hGGvqifFSdiGocwS/g0pcdGXjsWY="
+}
+```
+
 ### Listing attestations
 
 ```http
 GET /attestations HTTP/1.1
+```
 
-
+```http
 HTTP/1.1 200 OK
 Content-Type: application/json
 
