@@ -96,7 +96,7 @@ async fn attest_create(
     attest: Attestation,
     attest_db: AttestationDB,
     priv_key: Arc<RwLock<PKey<Private>>>,
-) -> Result<warp::reply::Json, ApiError> {
+) -> Result<warp::reply::Html<String>, ApiError> {
     let attest = Hashed::new(attest);
     let sig = {
         let priv_key = &*priv_key.read().await;
@@ -111,7 +111,7 @@ async fn attest_create(
         let mut attest_db = attest_db.write().await;
         attest_db.insert(attest.data.get_hash().to_string(), attest.clone());
     }
-    Ok(warp::reply::json(&attest.data))
+    Ok(warp::reply::html(attest.to_signed_json()))
 }
 
 async fn attest_receive(
