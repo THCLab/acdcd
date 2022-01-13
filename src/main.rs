@@ -78,6 +78,11 @@ async fn load_priv_key(path: &Path) -> anyhow::Result<PKey<Private>> {
             .context("Can't write to priv key file")?;
         key
     };
+
+    if let Ok(key) = key.raw_public_key() {
+        println!("Pub key: {}", base64::encode(key));
+    }
+
     Ok(key)
 }
 
