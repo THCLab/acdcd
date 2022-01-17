@@ -1,6 +1,7 @@
 use std::{collections::HashMap, convert::Infallible, sync::Arc};
 
-use acdc::{Attestation, Hashed, Signed};
+use acdc::{Attestation, Authored, Hashed, PubKey, Signed};
+use kademlia_dht::Node;
 use openssl::{
     pkey::{PKey, Private},
     sign::Signer,
@@ -8,11 +9,14 @@ use openssl::{
 use tokio::sync::RwLock;
 use warp::Filter;
 
+use crate::get_dht_key;
+
 #[derive(Debug)]
 enum ApiError {
     SigningError,
     InvalidAttestation,
     VerificationFailed,
+    InvalidIssuer,
 }
 
 impl warp::Reply for ApiError {
@@ -27,12 +31,10 @@ impl warp::reject::Reject for ApiError {}
 
 pub(crate) type AttestationDB = Arc<RwLock<HashMap<String, Signed<Hashed<Attestation>>>>>;
 
-pub(crate) type KeyDB = Arc<RwLock<HashMap<String, acdc::PubKey>>>;
-
 pub(crate) fn setup_routes(
-    attest_db: AttestationDB,
-    pub_keys: KeyDB,
     priv_key: Arc<RwLock<PKey<Private>>>,
+    dht_node: Arc<RwLock<Node>>,
+    attest_db: AttestationDB,
 ) -> impl warp::Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
     let attest_list_route = warp::path("attestations")
         .and(warp::get())
@@ -66,8 +68,8 @@ pub(crate) fn setup_routes(
             move || attest_db.clone()
         }))
         .and(warp::any().map({
-            let pub_keys = pub_keys;
-            move || pub_keys.clone()
+            let dht_node = dht_node;
+            move || dht_node.clone()
         }))
         .then(attest_receive)
         .map(handle_result);
@@ -98,7 +100,12 @@ async fn attest_create(
     attest_db: AttestationDB,
     priv_key: Arc<RwLock<PKey<Private>>>,
 ) -> Result<warp::reply::Html<String>, ApiError> {
+    // Hash
     let attest = Hashed::new(attest);
+    let attest_hash = attest.get_hash().to_string();
+    log::info!("Created attestation {:?}", attest_hash);
+
+    // Sign
     let sig = {
         let priv_key = &*priv_key.read().await;
         let mut signer =
@@ -108,30 +115,56 @@ async fn attest_create(
             .map_err(|_| (ApiError::SigningError))?
     };
     let attest = Signed::new_with_ed25519(attest, &sig).map_err(|_| (ApiError::SigningError))?;
+
+    // Save
     {
         let mut attest_db = attest_db.write().await;
-        attest_db.insert(attest.data.get_hash().to_string(), attest.clone());
+        attest_db.insert(attest_hash.clone(), attest.clone());
     }
+
     Ok(warp::reply::html(attest.to_signed_json()))
 }
 
 async fn attest_receive(
     attest: warp::hyper::body::Bytes,
     attest_db: AttestationDB,
-    pub_keys: KeyDB,
+    dht_node: Arc<RwLock<Node>>,
 ) -> Result<warp::reply::Json, ApiError> {
+    // Parse
     let attest = std::str::from_utf8(&attest).map_err(|_| ApiError::InvalidAttestation)?;
     let attest = Signed::<Hashed<Attestation>>::from_signed_json(attest)
         .map_err(|_| ApiError::InvalidAttestation)?;
+    let attest_issuer = attest.data.get_author_id();
+    let attest_hash = attest.data.get_hash().to_string();
+    log::info!(
+        "Received attestation {:?} by {:?}",
+        attest_hash,
+        attest_issuer
+    );
+
+    // Verify
     {
-        let pub_keys = pub_keys.read().await;
+        let mut dht_node = dht_node.write().await;
+        let issuer_key = dht_node
+            .get(&get_dht_key(attest_issuer.as_bytes()))
+            .ok_or(ApiError::InvalidIssuer)?;
+        let issuer_key = base64::decode(&issuer_key).map_err(|_| ApiError::InvalidIssuer)?;
+
+        let keys = {
+            let mut keys = HashMap::new();
+            keys.insert(attest_issuer.to_owned(), PubKey::ED25519(issuer_key));
+            keys
+        };
         attest
-            .verify(&pub_keys)
+            .verify(&keys)
             .map_err(|_| ApiError::VerificationFailed)?;
     }
+
+    // Save
     {
         let mut attest_db = attest_db.write().await;
-        attest_db.insert(attest.data.get_hash().to_string(), attest.clone());
+        attest_db.insert(attest_hash, attest.clone());
     }
+
     Ok(warp::reply::json(&attest.data))
 }
