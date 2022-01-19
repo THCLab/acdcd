@@ -6,7 +6,7 @@ use keri::prefix::Prefix;
 use tokio::sync::RwLock;
 use warp::Filter;
 
-use crate::{get_dht_key, controller::Controller};
+use crate::controller::Controller;
 
 #[derive(Debug)]
 enum ApiError {
@@ -29,8 +29,8 @@ impl warp::reject::Reject for ApiError {}
 pub(crate) type AttestationDB = Arc<RwLock<HashMap<String, Signed<Hashed<Attestation>>>>>;
 
 pub(crate) fn setup_routes(
-    priv_key: Arc<RwLock<Controller>>,
-    dht_node: Arc<RwLock<Node>>,
+    controller: Arc<RwLock<Controller>>,
+    // dht_node: Arc<RwLock<Node>>,
     attest_db: AttestationDB,
 ) -> impl warp::Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
     let attest_list_route = warp::path("attestations")
@@ -51,8 +51,8 @@ pub(crate) fn setup_routes(
             move || attest_db.clone()
         }))
         .and(warp::any().map({
-            let priv_key = priv_key;
-            move || priv_key.clone()
+            let controller = controller.clone();
+            move || controller.clone()
         }))
         .then(attest_create)
         .map(handle_result);
@@ -65,8 +65,8 @@ pub(crate) fn setup_routes(
             move || attest_db.clone()
         }))
         .and(warp::any().map({
-            let dht_node = dht_node;
-            move || dht_node.clone()
+            let controller = controller;
+            move || controller.clone()
         }))
         .then(attest_receive)
         .map(handle_result);
@@ -98,7 +98,10 @@ async fn attest_create(
     priv_key: Arc<RwLock<Controller>>,
 ) -> Result<warp::reply::Html<String>, ApiError> {
     // Hash
-    let attest = Hashed::new(attest);
+    let attest = Hashed::new(Attestation {
+        issuer: priv_key.read().await.get_prefix().to_str(),
+        ..attest
+    });
     let attest_hash = attest.get_hash().to_string();
     log::info!("Created attestation {:?}", attest_hash);
 
@@ -106,9 +109,10 @@ async fn attest_create(
     let sig = {
         let priv_key = &*priv_key.read().await;
         let msg = &Signed::get_json_bytes(&attest);
-        priv_key.sign(msg).unwrap().signature.derivative()
+        priv_key.sign(msg).unwrap()
     };
-    let attest = Signed::new_with_ed25519(attest, &sig).map_err(|_| (ApiError::SigningError))?;
+    let attest =
+        Signed::new_with_keri_signatures(attest, &[sig]).map_err(|_| (ApiError::SigningError))?;
 
     // Save
     {
@@ -122,7 +126,8 @@ async fn attest_create(
 async fn attest_receive(
     attest: warp::hyper::body::Bytes,
     attest_db: AttestationDB,
-    dht_node: Arc<RwLock<Node>>,
+    controller: Arc<RwLock<Controller>>,
+    // dht_node: Arc<RwLock<Node>>,
 ) -> Result<warp::reply::Json, ApiError> {
     // Parse
     let attest = std::str::from_utf8(&attest).map_err(|_| ApiError::InvalidAttestation)?;
@@ -138,15 +143,30 @@ async fn attest_receive(
 
     // Verify
     {
-        let mut dht_node = dht_node.write().await;
-        let issuer_key = dht_node
-            .get(&get_dht_key(attest_issuer.as_bytes()))
-            .ok_or(ApiError::InvalidIssuer)?;
-        let issuer_key = base64::decode(&issuer_key).map_err(|_| ApiError::InvalidIssuer)?;
+        // let mut dht_node = dht_node.write().await;
+        // let issuer_key = dht_node
+        //     .get(&get_dht_key(attest_issuer.as_bytes()))
+        //     .ok_or(ApiError::InvalidIssuer)?;
+
+        // Controller should provide as a kel/keystate
+
+        // let issuer_key = base64::decode(&issuer_key).map_err(|_| ApiError::InvalidIssuer)?;
+
+        // let keys = {
+        //     let mut keys = HashMap::new();
+        //     keys.insert(attest_issuer.to_owned(), PubKey::ED25519(issuer_key));
+        //     keys
+        // };
+
+        let key_config = controller
+            .read()
+            .await
+            .get_public_keys(&attest_issuer.parse().unwrap_or_default())
+            .unwrap();
 
         let keys = {
             let mut keys = HashMap::new();
-            keys.insert(attest_issuer.to_owned(), PubKey::ED25519(issuer_key));
+            keys.insert(attest_issuer.to_owned(), PubKey::KeriKeys(key_config));
             keys
         };
         attest

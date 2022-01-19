@@ -1,21 +1,15 @@
 mod api;
 mod controller;
 
-use std::{
-    collections::HashMap,
-    net::SocketAddr,
-    path::PathBuf,
-    sync::Arc,
-};
+use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use controller::Controller;
 use kademlia_dht::{Key, NodeData};
+use keri::prefix::Prefix;
 use rand::random;
 use sha3::{Digest, Sha3_256};
 use structopt::StructOpt;
-use tokio::{
-    sync::RwLock,
-};
+use tokio::sync::RwLock;
 
 use self::api::{setup_routes, AttestationDB};
 
@@ -67,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
     } = Opts::from_args();
 
     // let priv_key = load_priv_key(&priv_key_path).await?;
-    let cont = Controller::new(&kel_db_path);
+    let cont = Controller::new(&kel_db_path, None);
 
     let mut dht_node = kademlia_dht::Node::new(
         "0.0.0.0",
@@ -80,14 +74,14 @@ async fn main() -> anyhow::Result<()> {
 
     let pk = cont.get_public_key().unwrap();
     // if let Ok(key) = priv_key.raw_public_key() {
-        dht_node.insert(get_dht_key(user_id.as_bytes()), &base64::encode(pk));
+    dht_node.insert(get_dht_key(user_id.as_bytes()), &base64::encode(pk));
     // }
 
     let dht_node = Arc::new(RwLock::new(dht_node));
-    let priv_key = Arc::new(RwLock::new(cont));
+    let controller = Arc::new(RwLock::new(cont));
     let attest_db: AttestationDB = Arc::new(RwLock::new(HashMap::new()));
 
-    let routes = setup_routes(priv_key, dht_node, attest_db);
+    let routes = setup_routes(controller, attest_db);
 
     warp::serve(routes).run(([127, 0, 0, 1], api_port)).await;
 

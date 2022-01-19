@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-acdc = { git = "https://github.com/THCLab/acdc-rust" }
+acdc = { git = "https://github.com/THCLab/acdc-rust", branch = "keriox_feature", features = ["keriox"] }
 keri = { git = "https://github.com/WebOfTrust/keriox" }
 anyhow = "1.0.51"
 base64 = "0.13.0"
