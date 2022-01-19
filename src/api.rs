@@ -2,14 +2,11 @@ use std::{collections::HashMap, convert::Infallible, sync::Arc};
 
 use acdc::{Attestation, Authored, Hashed, PubKey, Signed};
 use kademlia_dht::Node;
-use openssl::{
-    pkey::{PKey, Private},
-    sign::Signer,
-};
+use keri::prefix::Prefix;
 use tokio::sync::RwLock;
 use warp::Filter;
 
-use crate::get_dht_key;
+use crate::{get_dht_key, controller::Controller};
 
 #[derive(Debug)]
 enum ApiError {
@@ -32,7 +29,7 @@ impl warp::reject::Reject for ApiError {}
 pub(crate) type AttestationDB = Arc<RwLock<HashMap<String, Signed<Hashed<Attestation>>>>>;
 
 pub(crate) fn setup_routes(
-    priv_key: Arc<RwLock<PKey<Private>>>,
+    priv_key: Arc<RwLock<Controller>>,
     dht_node: Arc<RwLock<Node>>,
     attest_db: AttestationDB,
 ) -> impl warp::Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
@@ -98,7 +95,7 @@ async fn attest_list(attest_db: AttestationDB) -> Result<warp::reply::Json, Infa
 async fn attest_create(
     attest: Attestation,
     attest_db: AttestationDB,
-    priv_key: Arc<RwLock<PKey<Private>>>,
+    priv_key: Arc<RwLock<Controller>>,
 ) -> Result<warp::reply::Html<String>, ApiError> {
     // Hash
     let attest = Hashed::new(attest);
@@ -108,11 +105,8 @@ async fn attest_create(
     // Sign
     let sig = {
         let priv_key = &*priv_key.read().await;
-        let mut signer =
-            Signer::new_without_digest(priv_key).map_err(|_| (ApiError::SigningError))?;
-        signer
-            .sign_oneshot_to_vec(&Signed::get_json_bytes(&attest))
-            .map_err(|_| (ApiError::SigningError))?
+        let msg = &Signed::get_json_bytes(&attest);
+        priv_key.sign(msg).unwrap().signature.derivative()
     };
     let attest = Signed::new_with_ed25519(attest, &sig).map_err(|_| (ApiError::SigningError))?;
 
