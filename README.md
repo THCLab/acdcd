@@ -11,6 +11,9 @@ FLAGS:
 OPTIONS:
         --api-port <api-port>          Daemon API listen port [default: 13434]
     -d, --kel-db-path <kel-db-path>     [default: controller_db]
+    -r <resolver-address>               [default: http://127.0.0.1:9599]
+    -t <witness-threshold>              [default: 0]
+    -w <witnesses>...                   [default: None]
 ```
 
 ## API
@@ -86,7 +89,7 @@ curl http://localhost:10201/attestations
 
 1. Start the resolver. You can set the listening port with `--api-port` flag, the default is 9599.
 
-2. Start witnesses. It will create the default database file `witness_db' and will use default port 3030. If you want to use more than one witness, each witness should have a separate database and port. It can be set with console arguments. When you start the witness, it will show you its identifier. 
+2. Start witnesses. It will create the default database file `witness_db` and will use default port 3030. If you want to use more than one witness, each witness should have a separate database and port. It can be set with console arguments. When you start the witness, it will show you its identifier. 
 **Note**: If you changed the resolver listening port in the previous step, you should set it for all of your witnesses using `-r` flag.
 
 3. Start tda. You can set witnesses used by tda using `-w` flag, their identifiers can be taken from the previous step. You can also set a witness threshold, default there are no witnesses and the threshold is 0. 
