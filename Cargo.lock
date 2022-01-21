@@ -19,27 +19,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "acdcd"
-version = "0.1.0"
-dependencies = [
- "acdc",
- "anyhow",
- "base64 0.13.0",
- "env_logger",
- "kademlia-dht",
- "keri",
- "log",
- "rand 0.8.4",
- "serde",
- "serde_json",
- "sha3 0.10.0",
- "structopt",
- "thiserror",
- "tokio",
- "warp",
-]
-
-[[package]]
 name = "aho-corasick"
 version = "0.7.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1856,6 +1835,27 @@ dependencies = [
  "quote",
  "syn",
  "unicode-xid",
+]
+
+[[package]]
+name = "tda-deamon"
+version = "0.1.0"
+dependencies = [
+ "acdc",
+ "anyhow",
+ "base64 0.13.0",
+ "env_logger",
+ "kademlia-dht",
+ "keri",
+ "log",
+ "rand 0.8.4",
+ "serde",
+ "serde_json",
+ "sha3 0.10.0",
+ "structopt",
+ "thiserror",
+ "tokio",
+ "warp",
 ]
 
 [[package]]
