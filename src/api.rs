@@ -95,11 +95,11 @@ async fn attest_list(attest_db: AttestationDB) -> Result<warp::reply::Json, Infa
 async fn attest_create(
     attest: Attestation,
     attest_db: AttestationDB,
-    priv_key: Arc<RwLock<Controller>>,
+    controller: Arc<RwLock<Controller>>,
 ) -> Result<warp::reply::Html<String>, ApiError> {
     // Hash
     let attest = Hashed::new(Attestation {
-        issuer: priv_key.read().await.get_prefix().to_str(),
+        issuer: controller.read().await.get_prefix().to_str(),
         ..attest
     });
     let attest_hash = attest.get_hash().to_string();
@@ -107,7 +107,7 @@ async fn attest_create(
 
     // Sign
     let sig = {
-        let priv_key = &*priv_key.read().await;
+        let priv_key = &*controller.read().await;
         let msg = &Signed::get_json_bytes(&attest);
         priv_key.sign(msg).unwrap()
     };

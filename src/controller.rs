@@ -8,31 +8,58 @@ use keri::{
     database::sled::SledEventDatabase,
     derivation::self_signing::SelfSigning,
     error::Error,
-    event::sections::KeyConfig,
+    event::sections::{KeyConfig, threshold::SignatureThreshold},
     keri::Keri,
     prefix::{AttachedSignaturePrefix, BasicPrefix, IdentifierPrefix},
     signer::{CryptoBox, KeyManager},
     state::IdentifierState,
 };
 
-pub struct Controller(Keri<CryptoBox>);
+pub struct Controller{
+    resolver_address: String,
+    controller: Keri<CryptoBox>
+}
 
 impl Controller {
-    pub fn new(db_path: &Path, initial_witnesses: Option<Vec<BasicPrefix>>) -> Self {
+    pub fn new(db_path: &Path, resolver_address: String, initial_witnesses: Option<Vec<BasicPrefix>>, initial_threshold: Option<SignatureThreshold>) -> Self {
         let db = Arc::new(SledEventDatabase::new(db_path).unwrap());
 
         let key_manager = { Arc::new(Mutex::new(CryptoBox::new().unwrap())) };
         let mut controller = Keri::new(Arc::clone(&db), key_manager.clone()).unwrap();
-        controller.incept(initial_witnesses);
+        let icp_event = controller.incept(initial_witnesses.clone(), initial_threshold).unwrap();
+        // send own icp to witnesses.
+        initial_witnesses.map(|wits| 
+            wits.iter().for_each(|w| {
+                // TODO
+                // ask resolver about witness address
+                // send icp to witness publish endpoint
+                // collect receipts
+                // process receipts and send them to all of the witnesses
+            })
+        );
 
-        Controller(controller)
+        Controller{controller, resolver_address}
+    }
+
+    pub fn rotate(&mut self, witness_to_add: Option<&[BasicPrefix]>, witness_to_remove: Option<&[BasicPrefix]>, witness_threshold: Option<SignatureThreshold>) -> Result<()> {
+        let rotation_event = self.controller.rotate(witness_to_add, witness_to_remove, witness_threshold)?;
+        let new_state = self.get_state()?.apply(&rotation_event)?;
+        let witnesses = new_state.witness_config.witnesses.iter().for_each(|w| {
+            // TODO
+            // ask resolver about witness address
+            // send rot to witness publish endpoint
+            // collect receipts
+            // process receipts and send them to all of the witnesses
+        });
+
+        Ok(())
     }
 
     pub fn sign(&self, data: &[u8]) -> Result<AttachedSignaturePrefix, Error> {
         Ok(AttachedSignaturePrefix::new(
             // assum Ed signature
             SelfSigning::Ed25519Sha512,
-            self.0
+            self.controller
                 .key_manager()
                 .lock()
                 .map_err(|_| Error::MutexPoisoned)?
@@ -79,7 +106,7 @@ impl Controller {
     }
 
     pub fn get_public_keys(&self, issuer: &IdentifierPrefix) -> Result<KeyConfig> {
-        match self.0.get_state_for_prefix(issuer)? {
+        match self.controller.get_state_for_prefix(issuer)? {
             Some(state) => Ok(state.current),
             None => {
                 // no state, we should ask resolver about kel/state
@@ -89,14 +116,14 @@ impl Controller {
     }
 
     pub fn get_prefix(&self) -> IdentifierPrefix {
-        self.0.prefix().clone()
+        self.controller.prefix().clone()
     }
 
     pub fn get_state(&self) -> Result<IdentifierState> {
-        Ok(self.0.get_state()?.unwrap())
+        Ok(self.controller.get_state()?.unwrap())
     }
 
     pub fn get_public_key(&self) -> Result<Vec<u8>> {
-        Ok(self.0.key_manager().lock().unwrap().public_key().key())
+        Ok(self.controller.key_manager().lock().unwrap().public_key().key())
     }
 }
