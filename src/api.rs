@@ -162,7 +162,7 @@ async fn attest_receive(
             .read()
             .await
             .get_public_keys(&attest_issuer.parse().unwrap_or_default())
-            .map_err(|e| ApiError::UnknownIssuer)?;
+            .map_err(|_e| ApiError::UnknownIssuer)?;
 
         let keys = {
             let mut keys = HashMap::new();
