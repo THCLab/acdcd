@@ -5,7 +5,7 @@ version = 3
 [[package]]
 name = "acdc"
 version = "0.1.0"
-source = "git+https://github.com/THCLab/acdc-rust?branch=keriox_feature#74b9f55da965b24c2beac93702048344455a3cef"
+source = "git+https://github.com/THCLab/acdc-rust?branch=keriox_feature#6cbd30f78be7fdf6d4cd1d4c70293765bc964857"
 dependencies = [
  "base64 0.13.0",
  "ed25519-dalek",

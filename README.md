@@ -2,20 +2,15 @@
 
 ```txt
 USAGE:
-    acdcd [OPTIONS]
+    tda-deamon [OPTIONS]
 
 FLAGS:
     -h, --help       Prints help information
     -V, --version    Prints version information
 
 OPTIONS:
-        --api-port <api-port>                Daemon API listen port [default: 13434]
-        --bootstrap-addr <bootstrap-addr>    DHT bootstrap IP address
-        --dht-port <dht-port>                DHT listen port [default: 13435]
-    -k, --priv-key-path <priv-key-path>      Path to private key PEM file. If it doesn't exist it will be generated with
-                                             a random key [default: acdcd.key]
-    -u, --user-id <user-id>                  Current user ID
-
+        --api-port <api-port>          Daemon API listen port [default: 13434]
+    -d, --kel-db-path <kel-db-path>     [default: controller_db]
 ```
 
 ## API
@@ -48,14 +43,13 @@ POST /attestations HTTP/1.1
 Content-Type: text/plain
 
 {
-    "v": "ACDC10JSON00011c_",
-    "i": "issuer",
-    "s": "E46jrVPTzlSkUPqGGeIZ8a8FWS7a6s4reAXRZOkogZ2A",
-    "a": {},
-    "p": [],
-    "r": [],
-    "d": "E1aoCawdBMPw0TfHtuHgQvfu5AzAHWUadzv9CCtUhZlI"
-}-0BIReyL7bwCTXwuNNKvIb2wZUyqKiBevHTcZvPyznPFso62xApCmkxZmSyXGvYK9eUUtf3aQofAG/rcN69bav4Dg==
+    "v":"ACDC10JSON00011c_",
+    "i":"DFoXDOClySJq5nvWKHXKRUYF8-SUHHR53Xugl4YdY9RM","s":"E46jrVPTzlSkUPqGGeIZ8a8FWS7a6s4reAXRZOkogZ2A",
+    "a":{},
+    "p":[],
+    "r":[],
+    "d":"EIxvZcjD9GaxlWeEUrPmiglmUqPnKQSKOm6NyVCuFS88"
+}-0K-AABAAbn6wxKnkerdoly2yqK6GFQ0UeYMxC-uuLAvs2_TjRZe69f3aW15zY_7AxutVwUuess5WQmwrBrS7DIRGb0JKCA
 ```
 
 ### Listing attestations
@@ -67,9 +61,9 @@ GET /attestations HTTP/1.1
 ## Example
 
 ```sh
-# Start two acdcd instances
-cargo run -- -u alice -k alice.key --api-port 10101 --dht-port 10102 &
-cargo run -- -u bob -k bob.key --api-port 10201 --dht-port 10202 --bootstrap-addr 127.0.0.1:10102 &
+# Start two tda instances
+cargo run -- -d alice.db --api-port 10101 &
+cargo run -- -d bob.db --api-port 10201 &
 
 # Create attestation as Alice
 curl http://localhost:10101/attestations/create -H 'Content-Type:application/json' \

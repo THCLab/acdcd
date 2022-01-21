@@ -13,6 +13,7 @@ enum ApiError {
     InvalidAttestation,
     VerificationFailed,
     // InvalidIssuer,
+    UnknownIssuer,
 }
 
 impl warp::Reply for ApiError {
@@ -161,7 +162,7 @@ async fn attest_receive(
             .read()
             .await
             .get_public_keys(&attest_issuer.parse().unwrap_or_default())
-            .unwrap();
+            .map_err(|e| ApiError::UnknownIssuer)?;
 
         let keys = {
             let mut keys = HashMap::new();
