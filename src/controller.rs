@@ -57,7 +57,7 @@ impl Controller {
 
     pub fn sign(&self, data: &[u8]) -> Result<AttachedSignaturePrefix, Error> {
         Ok(AttachedSignaturePrefix::new(
-            // assum Ed signature
+            // assume Ed signature
             SelfSigning::Ed25519Sha512,
             self.controller
                 .key_manager()
@@ -76,6 +76,7 @@ impl Controller {
         signatures: &[AttachedSignaturePrefix],
     ) -> Result<()> {
         let key_config = self.get_public_keys(issuer)?;
+        key_config.verify(message, signatures)?;
 
         // Logic for determining the index of the signature
         // into attached signature prefix to check signature threshold
@@ -100,14 +101,16 @@ impl Controller {
         //     })
         //     .collect();
 
-        key_config.verify(message, signatures)?;
 
         Ok(())
     }
 
     pub fn get_public_keys(&self, issuer: &IdentifierPrefix) -> Result<KeyConfig> {
         match self.controller.get_state_for_prefix(issuer)? {
-            Some(state) => Ok(state.current),
+            Some(state) => {
+                // probably should ask resolver if we have most recent keyconfig
+                Ok(state.current)
+            },
             None => {
                 // no state, we should ask resolver about kel/state
                 todo!()

@@ -1,7 +1,6 @@
 use std::{collections::HashMap, convert::Infallible, sync::Arc};
 
 use acdc::{Attestation, Authored, Hashed, PubKey, Signed};
-use kademlia_dht::Node;
 use keri::prefix::Prefix;
 use tokio::sync::RwLock;
 use warp::Filter;
@@ -13,7 +12,7 @@ enum ApiError {
     SigningError,
     InvalidAttestation,
     VerificationFailed,
-    InvalidIssuer,
+    // InvalidIssuer,
 }
 
 impl warp::Reply for ApiError {
