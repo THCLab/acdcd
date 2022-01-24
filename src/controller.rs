@@ -51,7 +51,10 @@ impl Controller {
             &controller,
         );
 
-        println!("\nTDA initialized succesfully.\n");
+        println!(
+            "\nTDA initialized succesfully. \nTda identifier: {}\n",
+            controller.prefix().to_str()
+        );
 
         Controller {
             controller,
@@ -130,8 +133,7 @@ impl Controller {
         let new_state = self
             .controller
             .get_state()?
-            .ok_or(anyhow::anyhow!("There's no state in database"))?
-            .apply(&rotation_event)?;
+            .ok_or(anyhow::anyhow!("There's no state in database"))?;
         let witnesses = new_state.witness_config.witnesses;
 
         Self::publish_event(
@@ -140,6 +142,7 @@ impl Controller {
             &self.resolver_address,
             &self.controller,
         );
+        println!("\nKeys rotated succesfully.");
 
         Ok(())
     }
@@ -209,6 +212,10 @@ impl Controller {
                 .call()?
                 .into_string();
 
+                println!(
+                    "\nAsk resolver about state: {}",
+                    state_from_resolver.as_ref().unwrap()
+                );
                 let state_from_resolver: Result<IdentifierState, _> =
                     serde_json::from_str(&state_from_resolver?);
 
@@ -219,5 +226,12 @@ impl Controller {
 
     pub fn get_prefix(&self) -> IdentifierPrefix {
         self.controller.prefix().clone()
+    }
+
+    pub fn get_kel(&self) -> Result<String> {
+        Ok(self.controller.get_kerl().map(|kel| match kel {
+            Some(kel) => String::from_utf8(kel).unwrap(),
+            None => "".to_string(),
+        })?)
     }
 }

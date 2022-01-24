@@ -1,7 +1,7 @@
 use std::{collections::HashMap, convert::Infallible, sync::Arc};
 
 use acdc::{Attestation, Authored, Hashed, PubKey, Signed};
-use keri::prefix::Prefix;
+use keri::{prefix::Prefix, signer::KeyManager};
 use tokio::sync::RwLock;
 use warp::Filter;
 
@@ -14,6 +14,7 @@ enum ApiError {
     VerificationFailed,
     // InvalidIssuer,
     UnknownIssuer,
+    SomeError(String),
 }
 
 impl warp::Reply for ApiError {
@@ -65,15 +66,25 @@ pub(crate) fn setup_routes(
             move || attest_db.clone()
         }))
         .and(warp::any().map({
-            let controller = controller;
+            let controller = controller.clone();
             move || controller.clone()
         }))
         .then(attest_receive)
         .map(handle_result);
 
+    let rotation_route = warp::path("rotate")
+        .and(warp::post())
+        .and(warp::any().map({
+            let controller = controller;
+            move || controller.clone()
+        }))
+        .then(rotate)
+        .map(handle_result);
+
     attest_list_route
         .or(attest_create_route)
         .or(attest_receive_route)
+        .or(rotation_route)
 }
 
 fn handle_result(result: Result<impl warp::Reply, impl warp::Reply>) -> impl warp::Reply {
@@ -181,4 +192,22 @@ async fn attest_receive(
     }
 
     Ok(warp::reply::json(&attest.data))
+}
+
+async fn rotate(
+    controller: Arc<RwLock<Controller>>,
+) -> Result<warp::reply::Html<String>, ApiError> {
+    controller
+        .write()
+        .await
+        .rotate(None, None, None)
+        .map_err(|e| ApiError::SomeError(e.to_string()))?;
+    let current_kel = controller
+        .read()
+        .await
+        .get_kel()
+        .map_err(|e| ApiError::SomeError(e.to_string()))?;
+
+    // TODO Should it return current kel?
+    Ok(warp::reply::html(current_kel))
 }
