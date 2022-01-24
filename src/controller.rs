@@ -42,6 +42,7 @@ impl Controller {
             .incept(initial_witnesses.clone(), initial_threshold)
             .unwrap())
             .into();
+        println!("\nInception event generated and signed...");
 
         Self::publish_event(
             &icp_event,
@@ -49,6 +50,8 @@ impl Controller {
             &resolver_address,
             &controller,
         );
+
+        println!("\nTDA initialized succesfully.\n");
 
         Controller {
             controller,
@@ -76,7 +79,7 @@ impl Controller {
             })
             .collect();
 
-        println!("\ngot witness adresses: {:?}\n", witness_ips);
+        println!("\ngot witness adresses: {:?}", witness_ips);
 
         // send event to witnesses and collect receipts
         let witness_receipts: Vec<_> = witness_ips
@@ -97,22 +100,17 @@ impl Controller {
             .flatten()
             .collect();
 
-        println!("\ngot witness receipts: {:?}\n", witness_receipts);
-
-        println!(
-            "\nkel still should be empty: {:?}\n",
-            &controller.get_kerl()
-        );
+        println!("\ngot {} witness receipts...", witness_receipts.len());
 
         let flatten_receipts = witness_receipts.join("");
-        controller.respond(flatten_receipts.as_bytes()).unwrap();
-        println!(
-            "\nevent should be accepted now. Current kel in controller: {}\n",
-            String::from_utf8(controller.get_kerl().unwrap().unwrap()).unwrap()
-        );
         // process receipts and send them to all of the witnesses
+        controller.respond(flatten_receipts.as_bytes()).unwrap();
+        // println!(
+        //     "\nevent should be accepted now. Current kel in controller: {}\n",
+        //     String::from_utf8(controller.get_kerl().unwrap().unwrap()).unwrap()
+        // );
 
-        println!("Sending all receipts to witnesses..");
+        // println!("Sending all receipts to witnesses..");
         witness_ips.iter().for_each(|ip| {
             ureq::post(&format!("http://{}/publish", ip))
                 .send_bytes(flatten_receipts.as_bytes())

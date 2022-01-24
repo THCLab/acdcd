@@ -43,6 +43,13 @@ async fn main() -> anyhow::Result<()> {
         witness_threshold
     } = Opts::from_args();
 
+    if witnesses.as_ref().is_some() && (witnesses.as_ref().unwrap().len() as u64) < witness_threshold {
+        // not enough witnesses, any event can be accepted.
+        Err(anyhow::anyhow!("Not enough witnesses provided"))
+    } else {
+        Ok(())
+    }?;
+
     let wits: Option<Vec<BasicPrefix>> = witnesses.map(|wit_list| wit_list.iter().map(|w| w.parse().unwrap()).collect());
 
     let cont = Controller::new(
