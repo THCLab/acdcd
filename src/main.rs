@@ -22,7 +22,7 @@ struct Opts {
     #[structopt(short = "r", default_value = "http://127.0.0.1:9599")]
     resolver_address: String,
 
-    #[structopt(short = "w", default_value = "None")]
+    #[structopt(short = "w")]
     witnesses: Option<Vec<String>>,
 
     #[structopt(short = "t", default_value = "0")]
@@ -40,17 +40,20 @@ async fn main() -> anyhow::Result<()> {
         api_port,
         resolver_address,
         witnesses,
-        witness_threshold
+        witness_threshold,
     } = Opts::from_args();
 
-    if witnesses.as_ref().is_some() && (witnesses.as_ref().unwrap().len() as u64) < witness_threshold {
+    if witnesses.as_ref().is_some()
+        && (witnesses.as_ref().unwrap().len() as u64) < witness_threshold
+    {
         // not enough witnesses, any event can be accepted.
         Err(anyhow::anyhow!("Not enough witnesses provided"))
     } else {
         Ok(())
     }?;
 
-    let wits: Option<Vec<BasicPrefix>> = witnesses.map(|wit_list| wit_list.iter().map(|w| w.parse().unwrap()).collect());
+    let wits: Option<Vec<BasicPrefix>> =
+        witnesses.map(|wit_list| wit_list.iter().map(|w| w.parse().unwrap()).collect());
 
     let cont = Controller::new(
         &kel_db_path,

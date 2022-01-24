@@ -46,7 +46,7 @@ impl Controller {
 
         Self::publish_event(
             &icp_event,
-            &initial_witnesses.unwrap(),
+            &initial_witnesses.unwrap_or_default(),
             &resolver_address,
             &controller,
         );
@@ -127,9 +127,13 @@ impl Controller {
         let rotation_event =
             self.controller
                 .rotate(witness_to_add, witness_to_remove, witness_threshold)?;
-        let new_state = self.get_state()?.apply(&rotation_event)?;
+        let new_state = self
+            .controller
+            .get_state()?
+            .ok_or(anyhow::anyhow!("There's no state in database"))?
+            .apply(&rotation_event)?;
         let witnesses = new_state.witness_config.witnesses;
-        
+
         Self::publish_event(
             &SignedEventData::from(&rotation_event),
             &witnesses,
@@ -197,26 +201,23 @@ impl Controller {
             }
             None => {
                 // no state, we should ask resolver about kel/state
-                todo!()
+                let state_from_resolver: Result<String, _> = ureq::get(&format!(
+                    "{}/key_states/{}",
+                    self.resolver_address,
+                    issuer.to_str()
+                ))
+                .call()?
+                .into_string();
+
+                let state_from_resolver: Result<IdentifierState, _> =
+                    serde_json::from_str(&state_from_resolver?);
+
+                Ok(state_from_resolver?.current)
             }
         }
     }
 
     pub fn get_prefix(&self) -> IdentifierPrefix {
         self.controller.prefix().clone()
-    }
-
-    pub fn get_state(&self) -> Result<IdentifierState> {
-        Ok(self.controller.get_state()?.unwrap())
-    }
-
-    pub fn get_public_key(&self) -> Result<Vec<u8>> {
-        Ok(self
-            .controller
-            .key_manager()
-            .lock()
-            .unwrap()
-            .public_key()
-            .key())
     }
 }
