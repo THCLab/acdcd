@@ -123,22 +123,77 @@ impl Controller {
 
     pub fn rotate(
         &mut self,
-        witness_to_add: Option<&[BasicPrefix]>,
-        witness_to_remove: Option<&[BasicPrefix]>,
-        witness_threshold: Option<SignatureThreshold>,
+        witness_list: Option<Vec<BasicPrefix>>,
+        witness_threshold: Option<u64>,
     ) -> Result<()> {
-        let rotation_event =
-            self.controller
-                .rotate(witness_to_add, witness_to_remove, witness_threshold)?;
-        let new_state = self
-            .controller
+        let old_witnesses_config = self
             .get_state()?
-            .ok_or(anyhow::anyhow!("There's no state in database"))?;
-        let witnesses = new_state.witness_config.witnesses;
+            .ok_or(anyhow::anyhow!("There's no state in database"))?
+            .witness_config;
+        let new_threshold = match witness_threshold {
+            Some(t) => SignatureThreshold::Simple(t),
+            None => old_witnesses_config.tally,
+        };
+        let old_witnesses = old_witnesses_config.witnesses;
+        let (witness_to_add, witness_to_remove) = match witness_list.clone() {
+            Some(new_wits) => (
+                Some(
+                    new_wits
+                        .clone()
+                        .into_iter()
+                        .filter(|w| !old_witnesses.contains(w))
+                        .collect::<Vec<_>>(),
+                ),
+                Some(
+                    old_witnesses
+                        .clone()
+                        .into_iter()
+                        .filter(|w| !new_wits.contains(w))
+                        .collect::<Vec<BasicPrefix>>(),
+                ),
+            ),
+            None => (None, None),
+        };
+
+        let rotation_event = self.controller.rotate(
+            witness_to_add.as_deref(),
+            witness_to_remove.as_deref(),
+            Some(new_threshold),
+        )?;
+        // send kerl and witness receipts to the new witnesses
+        // Get new witnesses address
+        let new_ips: Vec<_> = witness_to_add
+            .unwrap_or_default()
+            .into_iter()
+            .map(|w| {
+                let witness_ip: Ip = ureq::get(&format!(
+                    "{}/witness_ips/{}",
+                    self.resolver_address,
+                    w.to_str()
+                ))
+                .call()
+                .unwrap()
+                .into_json()
+                .unwrap();
+                witness_ip.ip
+            })
+            .collect();
+
+        let kerl: Vec<u8> = [self.get_kel()?.as_bytes(), &self.get_receipts()?].concat();
+        // send them kel and receipts
+        let _kel_sending_results = new_ips
+            .iter()
+            .map(|ip| ureq::post(&format!("http://{}/publish", ip)).send_bytes(&kerl))
+            .collect::<Vec<_>>();
+
+        println!(
+            "\nRotation event:\n{}",
+            String::from_utf8(rotation_event.serialize().unwrap()).unwrap()
+        );
 
         Self::publish_event(
             &SignedEventData::from(&rotation_event),
-            &witnesses,
+            &witness_list.unwrap_or_default(),
             &self.resolver_address,
             &self.controller,
         );
@@ -233,5 +288,23 @@ impl Controller {
             Some(kel) => String::from_utf8(kel).unwrap(),
             None => "".to_string(),
         })?)
+    }
+
+    pub fn get_state(&self) -> Result<Option<IdentifierState>> {
+        Ok(self.controller.get_state()?)
+    }
+
+    pub fn get_receipts(&self) -> Result<Vec<u8>> {
+        Ok(self
+            .controller
+            .db()
+            .get_receipts_nt(&self.controller.prefix())
+            .unwrap()
+            .map(|r| {
+                let sed: SignedEventData = r.into();
+                sed.to_cesr().unwrap()
+            })
+            .flatten()
+            .collect::<Vec<_>>())
     }
 }

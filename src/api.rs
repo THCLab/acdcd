@@ -1,7 +1,10 @@
 use std::{collections::HashMap, convert::Infallible, sync::Arc};
 
 use acdc::{Attestation, Authored, Hashed, PubKey, Signed};
-use keri::{prefix::Prefix, signer::KeyManager};
+use keri::{
+    prefix::{BasicPrefix, Prefix},
+};
+use serde::Deserialize;
 use tokio::sync::RwLock;
 use warp::Filter;
 
@@ -74,6 +77,7 @@ pub(crate) fn setup_routes(
 
     let rotation_route = warp::path("rotate")
         .and(warp::post())
+        .and(warp::body::bytes())
         .and(warp::any().map({
             let controller = controller;
             move || controller.clone()
@@ -195,12 +199,21 @@ async fn attest_receive(
 }
 
 async fn rotate(
+    rotation_data: warp::hyper::body::Bytes,
     controller: Arc<RwLock<Controller>>,
 ) -> Result<warp::reply::Html<String>, ApiError> {
+    #[derive(Deserialize)]
+    struct RotationData {
+        witness_prefixes: Option<Vec<BasicPrefix>>,
+        threshold: Option<u64>,
+    }
+    let rot_data: RotationData =
+        serde_json::from_slice(&rotation_data).map_err(|e| ApiError::SomeError(e.to_string()))?;
+
     controller
         .write()
         .await
-        .rotate(None, None, None)
+        .rotate(rot_data.witness_prefixes, rot_data.threshold)
         .map_err(|e| ApiError::SomeError(e.to_string()))?;
     let current_kel = controller
         .read()
