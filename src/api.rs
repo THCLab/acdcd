@@ -1,9 +1,7 @@
 use std::{collections::HashMap, convert::Infallible, sync::Arc};
 
 use acdc::{Attestation, Authored, Hashed, PubKey, Signed};
-use keri::{
-    prefix::{BasicPrefix, Prefix},
-};
+use keri::prefix::{BasicPrefix, Prefix};
 use serde::Deserialize;
 use tokio::sync::RwLock;
 use warp::Filter;
@@ -209,11 +207,20 @@ async fn rotate(
     }
     let rot_data: RotationData =
         serde_json::from_slice(&rotation_data).map_err(|e| ApiError::SomeError(e.to_string()))?;
-
+    let witness_prefixes = match rot_data.witness_prefixes {
+        Some(prefixes) => {
+            if prefixes.is_empty() {
+                None
+            } else {
+                Some(prefixes)
+            }
+        }
+        None => None,
+    };
     controller
         .write()
         .await
-        .rotate(rot_data.witness_prefixes, rot_data.threshold)
+        .rotate(witness_prefixes, rot_data.threshold)
         .map_err(|e| ApiError::SomeError(e.to_string()))?;
     let current_kel = controller
         .read()

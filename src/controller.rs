@@ -130,11 +130,37 @@ impl Controller {
             .get_state()?
             .ok_or(anyhow::anyhow!("There's no state in database"))?
             .witness_config;
-        let new_threshold = match witness_threshold {
-            Some(t) => SignatureThreshold::Simple(t),
-            None => old_witnesses_config.tally,
-        };
         let old_witnesses = old_witnesses_config.witnesses;
+
+        let new_threshold = match (witness_list.clone(), witness_threshold) {
+            (None, None) => Ok(old_witnesses_config.tally),
+            (None, Some(t)) => {
+                if old_witnesses.len() > t as usize {
+                    Err(anyhow::anyhow!("Improper thrreshold"))
+                } else {
+                    Ok(SignatureThreshold::Simple(t))
+                }
+            }
+            (Some(wits), None) => {
+                if let SignatureThreshold::Simple(t) = old_witnesses_config.tally {
+                    if t > wits.len() as u64 {
+                        Err(anyhow::anyhow!("Improper threshold"))
+                    } else {
+                        Ok(old_witnesses_config.tally)
+                    }
+                } else {
+                    Err(anyhow::anyhow!("Improper threshold"))
+                }
+            }
+            (Some(wits), Some(t)) => {
+                if t > wits.len() as u64 {
+                    Err(anyhow::anyhow!("Improper threshold"))
+                } else {
+                    Ok(SignatureThreshold::Simple(t))
+                }
+            }
+        }?;
+
         let (witness_to_add, witness_to_remove) = match witness_list.clone() {
             Some(new_wits) => (
                 Some(
