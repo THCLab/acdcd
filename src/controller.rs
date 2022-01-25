@@ -98,9 +98,9 @@ impl Controller {
                     errors: Vec<String>,
                 }
                 let wit_res: Result<RespondData, _> = kel.unwrap().into_json();
-                wit_res.unwrap().receipts
+                wit_res.unwrap().receipts.join("")
             })
-            .flatten()
+            // .flatten()
             .collect();
 
         println!("\ngot {} witness receipts...", witness_receipts.len());
@@ -219,7 +219,7 @@ impl Controller {
 
         Self::publish_event(
             &SignedEventData::from(&rotation_event),
-            &witness_list.unwrap_or_default(),
+            &witness_list.unwrap_or(old_witnesses),
             &self.resolver_address,
             &self.controller,
         );
