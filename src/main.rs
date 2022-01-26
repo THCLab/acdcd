@@ -50,26 +50,25 @@ async fn main() -> anyhow::Result<()> {
         known_resolvers,
     } = Figment::new().join(Json::file(config_file)).extract()?;
 
-    if witnesses.as_ref().is_some()
-        && (witnesses.as_ref().unwrap().len() as u64) < witness_threshold
-    {
-        // not enough witnesses, any event can be accepted.
-        Err(anyhow::anyhow!("Not enough witnesses provided"))
-    } else {
-        Ok(())
+    match witnesses {
+        Some(ref wit) if (wit.len() as u64) < witness_threshold => {
+            // not enough witnesses, any event can be accepted.
+            Err(anyhow::anyhow!("Not enough witnesses provided"))
+        }
+        _ => Ok(()),
     }?;
 
     let resolvers = known_resolvers
         .unwrap_or_default()
         .iter()
-        .map(|res| res.parse::<Url>().unwrap())
-        .collect();
+        .map(|res| -> Result<Url, _> { res.parse::<Url>() })
+        .collect::<Result<Vec<_>, _>>()?;
     let cont = Controller::new(
         &kel_db_path,
         resolvers,
         witnesses,
         Some(SignatureThreshold::Simple(witness_threshold)),
-    );
+    )?;
 
     let controller = Arc::new(RwLock::new(cont));
     let attest_db: AttestationDB = Arc::new(RwLock::new(HashMap::new()));

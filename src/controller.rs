@@ -30,15 +30,13 @@ impl Controller {
         resolver_addresses: Vec<Url>,
         initial_witnesses: Option<Vec<BasicPrefix>>,
         initial_threshold: Option<SignatureThreshold>,
-    ) -> Self {
-        let db = Arc::new(SledEventDatabase::new(db_path).unwrap());
+    ) -> Result<Self> {
+        let db = Arc::new(SledEventDatabase::new(db_path)?);
 
-        let key_manager = { Arc::new(Mutex::new(CryptoBox::new().unwrap())) };
-        let mut controller = Keri::new(Arc::clone(&db), key_manager.clone()).unwrap();
-        let icp_event: SignedEventData = (&controller
-            .incept(initial_witnesses.clone(), initial_threshold)
-            .unwrap())
-            .into();
+        let key_manager = { Arc::new(Mutex::new(CryptoBox::new()?)) };
+        let mut controller = Keri::new(Arc::clone(&db), key_manager.clone())?;
+        let icp_event: SignedEventData =
+            (&controller.incept(initial_witnesses.clone(), initial_threshold)?).into();
         println!("\nInception event generated and signed...");
 
         Self::publish_event(
@@ -46,17 +44,17 @@ impl Controller {
             &initial_witnesses.unwrap_or_default(),
             &resolver_addresses,
             &controller,
-        );
+        )?;
 
         println!(
             "\nTDA initialized succesfully. \nTda identifier: {}\n",
             controller.prefix().to_str()
         );
 
-        Controller {
+        Ok(Controller {
             controller,
             resolver_addresses,
-        }
+        })
     }
 
     fn publish_event(
@@ -64,21 +62,21 @@ impl Controller {
         witnesses: &[BasicPrefix],
         resolver_address: &[Url],
         controller: &Keri<CryptoBox>,
-    ) {
+    ) -> Result<()> {
         // Get witnesses ip addresses
-        let witness_ips: Vec<_> = witnesses
+        let witness_ips = witnesses
             .iter()
-            .map(|w| Self::get_witness_ip(resolver_address, w).unwrap())
-            .collect();
+            .map(|w| -> Result<String> { Self::get_witness_ip(resolver_address, w) })
+            .collect::<Result<Vec<_>>>()?;
 
         println!("\ngot witness adresses: {:?}", witness_ips);
 
         // send event to witnesses and collect receipts
-        let witness_receipts: Vec<_> = witness_ips
+        let witness_receipts = witness_ips
             .iter()
-            .map(|ip| {
-                let kel = ureq::post(&format!("http://{}/publish", ip))
-                    .send_bytes(&event.to_cesr().unwrap());
+            .map(|ip| -> Result<String> {
+                let kel =
+                    ureq::post(&format!("http://{}/publish", ip)).send_bytes(&event.to_cesr()?);
                 #[derive(Serialize, Deserialize)]
                 struct RespondData {
                     parsed: u64,
@@ -86,17 +84,23 @@ impl Controller {
                     receipts: Vec<String>,
                     errors: Vec<String>,
                 }
-                let wit_res: Result<RespondData, _> = kel.unwrap().into_json();
-                wit_res.unwrap().receipts.join("")
+                let wit_res: Result<RespondData, _> = kel?.into_json();
+                wit_res
+                    .map(|r| r.receipts.join(""))
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))
             })
             // .flatten()
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
 
         println!("\ngot {} witness receipts...", witness_receipts.len());
 
         let flatten_receipts = witness_receipts.join("");
         // process receipts and send them to all of the witnesses
-        controller.respond(flatten_receipts.as_bytes()).unwrap();
+        let _processing = witness_receipts
+            .iter()
+            .map(|rct| {
+                controller.respond_single(rct.as_bytes()).unwrap()
+            }).collect::<Vec<_>>();
         // println!(
         //     "\nevent should be accepted now. Current kel in controller: {}\n",
         //     String::from_utf8(controller.get_kerl().unwrap().unwrap()).unwrap()
@@ -108,6 +112,7 @@ impl Controller {
                 .send_bytes(flatten_receipts.as_bytes())
                 .unwrap();
         });
+        Ok(())
     }
 
     pub fn rotate(
@@ -177,14 +182,14 @@ impl Controller {
         )?;
         // send kerl and witness receipts to the new witnesses
         // Get new witnesses address
-        let new_ips: Vec<_> = witness_to_add
+        let new_ips = witness_to_add
             .unwrap_or_default()
             .into_iter()
-            .map(|w| {
+            .map(|w| -> Result<String> {
                 let witness_ip = Self::get_witness_ip(&self.resolver_addresses, &w);
-                witness_ip.unwrap()
+                witness_ip
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
 
         let kerl: Vec<u8> = [self.get_kel()?.as_bytes(), &self.get_receipts()?].concat();
         // send them kel and receipts
@@ -195,7 +200,7 @@ impl Controller {
 
         println!(
             "\nRotation event:\n{}",
-            String::from_utf8(rotation_event.serialize().unwrap()).unwrap()
+            String::from_utf8(rotation_event.serialize()?)?
         );
 
         Self::publish_event(
@@ -203,7 +208,7 @@ impl Controller {
             &witness_list.unwrap_or(old_witnesses),
             &self.resolver_addresses,
             &self.controller,
-        );
+        )?;
         println!("\nKeys rotated succesfully.");
 
         Ok(())
@@ -280,19 +285,20 @@ impl Controller {
     }
 
     pub fn get_state_from_resolvers(&self, prefix: &IdentifierPrefix) -> Result<IdentifierState> {
-        let state_from_resolvers: Option<String> = self.resolver_addresses.iter().find_map(|res| {
-            ureq::get(&format!("{}/key_states/{}", res, prefix.to_str()))
-                .call()
-                .unwrap()
-                .into_json()
-                .unwrap()
-        });
-        println!(
-            "\nAsk resolver about state: {}",
-            state_from_resolvers.as_ref().unwrap()
-        );
+        let state_from_resolvers: String = self
+            .resolver_addresses
+            .iter()
+            .find_map(|res| {
+                ureq::get(&format!("{}/key_states/{}", res, prefix.to_str()))
+                    .call()
+                    .unwrap()
+                    .into_json()
+                    .unwrap()
+            })
+            .ok_or(anyhow::anyhow!("State can't be found in resolvers"))?;
+        println!("\nAsk resolver about state: {}", state_from_resolvers);
         let state_from_resolver: Result<IdentifierState, _> =
-            serde_json::from_str(&state_from_resolvers.unwrap());
+            serde_json::from_str(&state_from_resolvers);
 
         Ok(state_from_resolver?)
     }
@@ -316,10 +322,11 @@ impl Controller {
     }
 
     pub fn get_kel(&self) -> Result<String> {
-        Ok(self.controller.get_kerl().map(|kel| match kel {
-            Some(kel) => String::from_utf8(kel).unwrap(),
-            None => "".to_string(),
-        })?)
+        Ok(self
+            .controller
+            .get_kerl()?
+            .map(|kel| String::from_utf8(kel).expect("kel can't be converted to string"))
+            .unwrap_or_default())
     }
 
     pub fn get_state(&self) -> Result<Option<IdentifierState>> {
@@ -331,10 +338,10 @@ impl Controller {
             .controller
             .db()
             .get_receipts_nt(&self.controller.prefix())
-            .unwrap()
+            .ok_or(anyhow::anyhow!("There are no nontransferable receipts"))?
             .map(|r| {
                 let sed: SignedEventData = r.into();
-                sed.to_cesr().unwrap()
+                sed.to_cesr().expect("CESR format problem")
             })
             .flatten()
             .collect::<Vec<_>>())

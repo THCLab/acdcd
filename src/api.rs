@@ -122,7 +122,9 @@ async fn attest_create(
     let sig = {
         let priv_key = &*controller.read().await;
         let msg = &Signed::get_json_bytes(&attest);
-        priv_key.sign(msg).unwrap()
+        priv_key
+            .sign(msg)
+            .map_err(|e| ApiError::SomeError(e.to_string()))?
     };
     let attest =
         Signed::new_with_keri_signatures(attest, &[sig]).map_err(|_| (ApiError::SigningError))?;
