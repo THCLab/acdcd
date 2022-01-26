@@ -1,32 +1,36 @@
 mod api;
 mod controller;
 
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, net::IpAddr, path::PathBuf, sync::Arc};
 
 use controller::Controller;
+use figment::{
+    providers::{Format, Json},
+    Figment,
+};
 use keri::{event::sections::threshold::SignatureThreshold, prefix::BasicPrefix};
+use serde::Deserialize;
 use structopt::StructOpt;
 use tokio::sync::RwLock;
+use url::Url;
 
 use self::api::{setup_routes, AttestationDB};
 
+#[derive(Deserialize)]
+struct Config {
+    kel_db_path: PathBuf,
+    api_host: String,
+    /// Daemon API listen port.
+    api_port: u16,
+    witnesses: Option<Vec<BasicPrefix>>,
+    known_resolvers: Option<Vec<String>>,
+    witness_threshold: u64,
+}
+
 #[derive(Debug, StructOpt)]
 struct Opts {
-    #[structopt(short = "d", long, default_value = "controller_db")]
-    kel_db_path: PathBuf,
-
-    /// Daemon API listen port.
-    #[structopt(long, default_value = "13434")]
-    api_port: u16,
-
-    #[structopt(short = "r", default_value = "http://127.0.0.1:9599")]
-    resolver_address: String,
-
-    #[structopt(short = "w")]
-    witnesses: Option<Vec<String>>,
-
-    #[structopt(short = "t", default_value = "0")]
-    witness_threshold: u64,
+    #[structopt(short = "c", long, default_value = "config.json")]
+    config_file: String,
 }
 
 #[tokio::main]
@@ -35,13 +39,16 @@ async fn main() -> anyhow::Result<()> {
         env_logger::Env::default().filter_or(env_logger::DEFAULT_FILTER_ENV, "info"),
     );
 
-    let Opts {
+    let Opts { config_file } = Opts::from_args();
+
+    let Config {
         kel_db_path,
+        api_host,
         api_port,
-        resolver_address,
         witnesses,
         witness_threshold,
-    } = Opts::from_args();
+        known_resolvers,
+    } = Figment::new().join(Json::file(config_file)).extract()?;
 
     if witnesses.as_ref().is_some()
         && (witnesses.as_ref().unwrap().len() as u64) < witness_threshold
@@ -52,13 +59,15 @@ async fn main() -> anyhow::Result<()> {
         Ok(())
     }?;
 
-    let wits: Option<Vec<BasicPrefix>> =
-        witnesses.map(|wit_list| wit_list.iter().map(|w| w.parse().unwrap()).collect());
-
+    let resolvers = known_resolvers
+        .unwrap_or_default()
+        .iter()
+        .map(|res| res.parse::<Url>().unwrap())
+        .collect();
     let cont = Controller::new(
         &kel_db_path,
-        resolver_address,
-        wits,
+        resolvers,
+        witnesses,
         Some(SignatureThreshold::Simple(witness_threshold)),
     );
 
@@ -67,7 +76,9 @@ async fn main() -> anyhow::Result<()> {
 
     let routes = setup_routes(controller, attest_db);
 
-    warp::serve(routes).run(([127, 0, 0, 1], api_port)).await;
+    warp::serve(routes)
+        .run((api_host.parse::<IpAddr>()?, api_port))
+        .await;
 
     Ok(())
 }

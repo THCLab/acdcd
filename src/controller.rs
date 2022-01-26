@@ -17,20 +17,17 @@ use keri::{
 };
 use serde::{Deserialize, Serialize};
 
-pub struct Controller {
-    resolver_address: String,
-    controller: Keri<CryptoBox>,
-}
+use crate::Url;
 
-#[derive(Serialize, Deserialize, Clone)]
-struct Ip {
-    pub ip: String,
+pub struct Controller {
+    resolver_addresses: Vec<Url>,
+    controller: Keri<CryptoBox>,
 }
 
 impl Controller {
     pub fn new(
         db_path: &Path,
-        resolver_address: String,
+        resolver_addresses: Vec<Url>,
         initial_witnesses: Option<Vec<BasicPrefix>>,
         initial_threshold: Option<SignatureThreshold>,
     ) -> Self {
@@ -47,7 +44,7 @@ impl Controller {
         Self::publish_event(
             &icp_event,
             &initial_witnesses.unwrap_or_default(),
-            &resolver_address,
+            &resolver_addresses,
             &controller,
         );
 
@@ -58,28 +55,20 @@ impl Controller {
 
         Controller {
             controller,
-            resolver_address,
+            resolver_addresses,
         }
     }
 
     fn publish_event(
         event: &SignedEventData,
         witnesses: &[BasicPrefix],
-        resolver_address: &str,
+        resolver_address: &[Url],
         controller: &Keri<CryptoBox>,
     ) {
         // Get witnesses ip addresses
         let witness_ips: Vec<_> = witnesses
             .iter()
-            .map(|w| {
-                let witness_ip: Ip =
-                    ureq::get(&format!("{}/witness_ips/{}", resolver_address, w.to_str()))
-                        .call()
-                        .unwrap()
-                        .into_json()
-                        .unwrap();
-                witness_ip.ip
-            })
+            .map(|w| Self::get_witness_ip(resolver_address, w).unwrap())
             .collect();
 
         println!("\ngot witness adresses: {:?}", witness_ips);
@@ -192,16 +181,8 @@ impl Controller {
             .unwrap_or_default()
             .into_iter()
             .map(|w| {
-                let witness_ip: Ip = ureq::get(&format!(
-                    "{}/witness_ips/{}",
-                    self.resolver_address,
-                    w.to_str()
-                ))
-                .call()
-                .unwrap()
-                .into_json()
-                .unwrap();
-                witness_ip.ip
+                let witness_ip = Self::get_witness_ip(&self.resolver_addresses, &w);
+                witness_ip.unwrap()
             })
             .collect();
 
@@ -220,7 +201,7 @@ impl Controller {
         Self::publish_event(
             &SignedEventData::from(&rotation_event),
             &witness_list.unwrap_or(old_witnesses),
-            &self.resolver_address,
+            &self.resolver_addresses,
             &self.controller,
         );
         println!("\nKeys rotated succesfully.");
@@ -242,7 +223,7 @@ impl Controller {
         ))
     }
 
-    pub fn verify(
+    pub fn _verify(
         &self,
         issuer: &IdentifierPrefix,
         message: &[u8],
@@ -277,6 +258,45 @@ impl Controller {
         Ok(())
     }
 
+    pub fn get_witness_ip(resolvers: &[Url], witness: &BasicPrefix) -> Result<String> {
+        #[derive(Serialize, Deserialize, Clone)]
+        struct Ip {
+            pub ip: String,
+        }
+        let witness_ip: Option<Ip> = resolvers.iter().find_map(|res| {
+            ureq::get(
+                res.join(&format!("witness_ips/{}", witness.to_str()))
+                    .unwrap()
+                    .as_str(),
+            )
+            .call()
+            .unwrap()
+            .into_json()
+            .unwrap()
+        });
+        Ok(witness_ip
+            .expect("No such witness in registered resolvers")
+            .ip)
+    }
+
+    pub fn get_state_from_resolvers(&self, prefix: &IdentifierPrefix) -> Result<IdentifierState> {
+        let state_from_resolvers: Option<String> = self.resolver_addresses.iter().find_map(|res| {
+            ureq::get(&format!("{}/key_states/{}", res, prefix.to_str()))
+                .call()
+                .unwrap()
+                .into_json()
+                .unwrap()
+        });
+        println!(
+            "\nAsk resolver about state: {}",
+            state_from_resolvers.as_ref().unwrap()
+        );
+        let state_from_resolver: Result<IdentifierState, _> =
+            serde_json::from_str(&state_from_resolvers.unwrap());
+
+        Ok(state_from_resolver?)
+    }
+
     pub fn get_public_keys(&self, issuer: &IdentifierPrefix) -> Result<KeyConfig> {
         match self.controller.get_state_for_prefix(issuer)? {
             Some(state) => {
@@ -285,21 +305,7 @@ impl Controller {
             }
             None => {
                 // no state, we should ask resolver about kel/state
-                let state_from_resolver: Result<String, _> = ureq::get(&format!(
-                    "{}/key_states/{}",
-                    self.resolver_address,
-                    issuer.to_str()
-                ))
-                .call()?
-                .into_string();
-
-                println!(
-                    "\nAsk resolver about state: {}",
-                    state_from_resolver.as_ref().unwrap()
-                );
-                let state_from_resolver: Result<IdentifierState, _> =
-                    serde_json::from_str(&state_from_resolver?);
-
+                let state_from_resolver = self.get_state_from_resolvers(issuer);
                 Ok(state_from_resolver?.current)
             }
         }
