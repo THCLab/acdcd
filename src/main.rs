@@ -53,7 +53,7 @@ impl WitnessConfig {
     pub fn get_location(&self) -> Result<Url> {
         self.location
             .as_ref()
-            .map(|l| l.clone())
+            .cloned()
             .ok_or(anyhow::anyhow!("No location set"))
     }
 }

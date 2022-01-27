@@ -36,21 +36,17 @@ impl Controller {
         let db = Arc::new(SledEventDatabase::new(db_path)?);
 
         let key_manager = { Arc::new(Mutex::new(CryptoBox::new()?)) };
-        let mut keri_controller = Keri::new(Arc::clone(&db), key_manager.clone())?;
+        let mut keri_controller = Keri::new(Arc::clone(&db), key_manager)?;
         // save witnesses location, because they can not be find in resolvers
         let mut locations = HashMap::new();
         let ini_witnesses = initial_witnesses.map(|witnesses| {
             witnesses
                 .iter()
                 .map(|w| {
-                    match w.get_location() {
-                        Ok(loc) => {
-                            locations
-                                .insert(w.get_aid().unwrap().to_str(), loc);
-                        }
-                        Err(_) => {
-                            // TODO check if resolver has this id?
-                        }
+                    if let Ok(loc) = w.get_location() {
+                        locations.insert(w.get_aid().unwrap().to_str(), loc);
+                    } else {
+                        // TODO check if resolver has this id?
                     };
                     w.get_aid()
                 })
@@ -86,13 +82,19 @@ impl Controller {
                     Some(loc) => Ok(loc.to_owned()),
                     None => {
                         // ask resolver about ip
-                        Self::get_witness_ip(&self.resolver_addresses, &w)
+                        Self::get_witness_ip(&self.resolver_addresses, w)
                     }
                 }
             })
             .collect::<Result<Vec<_>>>()?;
 
-        println!("\ngot witness adresses: {:?}", witness_ips);
+        println!(
+            "\ngot witness adresses: {:?}",
+            witness_ips
+                .iter()
+                .map(|w| w.to_string())
+                .collect::<Vec<_>>()
+        );
 
         // send event to witnesses and collect receipts
         let witness_receipts = witness_ips
@@ -191,7 +193,7 @@ impl Controller {
                         new_witness_prefixes
                             .clone()
                             .into_iter()
-                            .filter(|w| !old_witnesses.contains(&w))
+                            .filter(|w| !old_witnesses.contains(w))
                             .collect::<Vec<_>>(),
                     ),
                     Some(
@@ -211,14 +213,11 @@ impl Controller {
             .unwrap_or_default()
             .iter()
             .map(|w| {
-                match w.get_location() {
-                    Ok(loc) => {
-                        self.saved_witnesses
-                            .insert(w.get_aid().unwrap().to_str(), loc);
-                    }
-                    Err(_) => {
-                        // TODO check if resolver got it id?
-                    }
+                if let Ok(loc) = w.get_location() {
+                    self.saved_witnesses
+                        .insert(w.get_aid().unwrap().to_str(), loc);
+                } else {
+                    // TODO check if resolver got it id?
                 };
                 w.get_aid()
             })
@@ -236,10 +235,7 @@ impl Controller {
         let new_ips = witness_to_add
             .unwrap_or_default()
             .into_iter()
-            .map(|w| -> Result<Url> {
-                let witness_ip = Self::get_witness_ip(&self.resolver_addresses, &w);
-                witness_ip
-            })
+            .map(|w| -> Result<Url> { Self::get_witness_ip(&self.resolver_addresses, &w) })
             .collect::<Result<Vec<_>>>()?;
 
         let kerl: Vec<u8> = [self.get_kel()?.as_bytes(), &self.get_receipts()?].concat();
@@ -391,7 +387,7 @@ impl Controller {
         Ok(self
             .controller
             .db()
-            .get_receipts_nt(&self.controller.prefix())
+            .get_receipts_nt(self.controller.prefix())
             .ok_or(anyhow::anyhow!("There are no nontransferable receipts"))?
             .map(|r| {
                 let sed: SignedEventData = r.into();
