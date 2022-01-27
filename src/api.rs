@@ -6,7 +6,7 @@ use serde::Deserialize;
 use tokio::sync::RwLock;
 use warp::Filter;
 
-use crate::controller::Controller;
+use crate::{controller::Controller, WitnessConfig};
 
 #[derive(Debug)]
 enum ApiError {
@@ -204,7 +204,7 @@ async fn rotate(
 ) -> Result<warp::reply::Html<String>, ApiError> {
     #[derive(Deserialize)]
     struct RotationData {
-        witness_prefixes: Option<Vec<BasicPrefix>>,
+        witness_prefixes: Option<Vec<WitnessConfig>>,
         threshold: Option<u64>,
     }
     let rot_data: RotationData =

@@ -3,6 +3,7 @@ mod controller;
 
 use std::{collections::HashMap, net::IpAddr, path::PathBuf, sync::Arc};
 
+use anyhow::Result;
 use controller::Controller;
 use figment::{
     providers::{Format, Json},
@@ -22,9 +23,39 @@ struct Config {
     api_host: String,
     /// Daemon API listen port.
     api_port: u16,
-    witnesses: Option<Vec<BasicPrefix>>,
-    known_resolvers: Option<Vec<String>>,
+    bootstrap: BootstrapConfig,
+}
+
+#[derive(Deserialize)]
+struct BootstrapConfig {
+    witnesses: Option<Vec<WitnessConfig>>,
+    known_resolvers: Option<Vec<Url>>,
     witness_threshold: u64,
+}
+
+#[derive(Deserialize)]
+pub struct WitnessConfig {
+    pub aid: Option<BasicPrefix>,
+    pub location: Option<Url>,
+}
+
+impl WitnessConfig {
+    pub fn get_aid(&self) -> Result<BasicPrefix> {
+        match &self.aid {
+            Some(aid) => Ok(aid.clone()),
+            None => {
+                //ask about prefix
+                todo!()
+            }
+        }
+    }
+
+    pub fn get_location(&self) -> Result<Url> {
+        self.location
+            .as_ref()
+            .map(|l| l.clone())
+            .ok_or(anyhow::anyhow!("No location set"))
+    }
 }
 
 #[derive(Debug, StructOpt)]
@@ -45,29 +76,22 @@ async fn main() -> anyhow::Result<()> {
         kel_db_path,
         api_host,
         api_port,
-        witnesses,
-        witness_threshold,
-        known_resolvers,
+        bootstrap,
     } = Figment::new().join(Json::file(config_file)).extract()?;
 
-    match witnesses {
-        Some(ref wit) if (wit.len() as u64) < witness_threshold => {
+    match bootstrap.witnesses {
+        Some(ref wit) if (wit.len() as u64) < bootstrap.witness_threshold => {
             // not enough witnesses, any event can be accepted.
             Err(anyhow::anyhow!("Not enough witnesses provided"))
         }
         _ => Ok(()),
     }?;
 
-    let resolvers = known_resolvers
-        .unwrap_or_default()
-        .iter()
-        .map(|res| -> Result<Url, _> { res.parse::<Url>() })
-        .collect::<Result<Vec<_>, _>>()?;
     let cont = Controller::new(
         &kel_db_path,
-        resolvers,
-        witnesses,
-        Some(SignatureThreshold::Simple(witness_threshold)),
+        bootstrap.known_resolvers.unwrap_or_default(),
+        bootstrap.witnesses,
+        Some(SignatureThreshold::Simple(bootstrap.witness_threshold)),
     )?;
 
     let controller = Arc::new(RwLock::new(cont));

@@ -2,7 +2,13 @@
 	"api_port": 13434,
 	"api_host": "0.0.0.0",
 	"kel_db_path": "/tmp/path",
-	"witness_threshold": 1,
-	"witnesses": ["DCFOxxq06DSQ8M6A6MNyAbQXOXWzy53QGeduwzP9n6UU"],
-	"known_resolvers": ["http://127.0.0.1:9599"]
+  "bootstrap": {
+  	"witness_threshold": 1,
+  	"witnesses": [
+       { 
+         "aid": "DUbyCAUPn-UhwEF8sJDlp_HRxtn5YVygpXFc7VpU5c_0"
+       }
+    ],
+	  "known_resolvers": ["http://127.0.0.1:9599"]
+  }
 }

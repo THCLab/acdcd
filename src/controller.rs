@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -17,10 +18,11 @@ use keri::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::Url;
+use crate::{Url, WitnessConfig};
 
 pub struct Controller {
     resolver_addresses: Vec<Url>,
+    saved_witnesses: HashMap<String, Url>,
     controller: Keri<CryptoBox>,
 }
 
@@ -28,45 +30,66 @@ impl Controller {
     pub fn new(
         db_path: &Path,
         resolver_addresses: Vec<Url>,
-        initial_witnesses: Option<Vec<BasicPrefix>>,
+        initial_witnesses: Option<Vec<WitnessConfig>>,
         initial_threshold: Option<SignatureThreshold>,
     ) -> Result<Self> {
         let db = Arc::new(SledEventDatabase::new(db_path)?);
 
         let key_manager = { Arc::new(Mutex::new(CryptoBox::new()?)) };
-        let mut controller = Keri::new(Arc::clone(&db), key_manager.clone())?;
+        let mut keri_controller = Keri::new(Arc::clone(&db), key_manager.clone())?;
+        // save witnesses location, because they can not be find in resolvers
+        let mut locations = HashMap::new();
+        let ini_witnesses = initial_witnesses.map(|witnesses| {
+            witnesses
+                .iter()
+                .map(|w| {
+                    match w.get_location() {
+                        Ok(loc) => {
+                            locations
+                                .insert(w.get_aid().unwrap().to_str(), loc);
+                        }
+                        Err(_) => {
+                            // TODO check if resolver has this id?
+                        }
+                    };
+                    w.get_aid()
+                })
+                .collect::<Result<Vec<_>>>()
+                .unwrap()
+        });
+
         let icp_event: SignedEventData =
-            (&controller.incept(initial_witnesses.clone(), initial_threshold)?).into();
+            (&keri_controller.incept(ini_witnesses.clone(), initial_threshold)?).into();
         println!("\nInception event generated and signed...");
 
-        Self::publish_event(
-            &icp_event,
-            &initial_witnesses.unwrap_or_default(),
-            &resolver_addresses,
-            &controller,
-        )?;
+        let controller = Controller {
+            controller: keri_controller,
+            resolver_addresses,
+            saved_witnesses: locations,
+        };
+        controller.publish_event(&icp_event, &ini_witnesses.unwrap_or_default())?;
 
         println!(
             "\nTDA initialized succesfully. \nTda identifier: {}\n",
-            controller.prefix().to_str()
+            controller.controller.prefix().to_str()
         );
 
-        Ok(Controller {
-            controller,
-            resolver_addresses,
-        })
+        Ok(controller)
     }
 
-    fn publish_event(
-        event: &SignedEventData,
-        witnesses: &[BasicPrefix],
-        resolver_address: &[Url],
-        controller: &Keri<CryptoBox>,
-    ) -> Result<()> {
+    fn publish_event(&self, event: &SignedEventData, witnesses: &[BasicPrefix]) -> Result<()> {
         // Get witnesses ip addresses
         let witness_ips = witnesses
             .iter()
-            .map(|w| -> Result<String> { Self::get_witness_ip(resolver_address, w) })
+            .map(|w| -> Result<Url> {
+                match self.saved_witnesses.get(&w.to_str()) {
+                    Some(loc) => Ok(loc.to_owned()),
+                    None => {
+                        // ask resolver about ip
+                        Self::get_witness_ip(&self.resolver_addresses, &w)
+                    }
+                }
+            })
             .collect::<Result<Vec<_>>>()?;
 
         println!("\ngot witness adresses: {:?}", witness_ips);
@@ -75,8 +98,7 @@ impl Controller {
         let witness_receipts = witness_ips
             .iter()
             .map(|ip| -> Result<String> {
-                let kel =
-                    ureq::post(&format!("http://{}/publish", ip)).send_bytes(&event.to_cesr()?);
+                let kel = ureq::post(&format!("{}publish", ip)).send_bytes(&event.to_cesr()?);
                 #[derive(Serialize, Deserialize)]
                 struct RespondData {
                     parsed: u64,
@@ -98,9 +120,12 @@ impl Controller {
         // process receipts and send them to all of the witnesses
         let _processing = witness_receipts
             .iter()
-            .map(|rct| {
-                controller.respond_single(rct.as_bytes()).unwrap()
-            }).collect::<Vec<_>>();
+            .map(|rct| -> Result<_> {
+                self.controller
+                    .respond_single(rct.as_bytes())
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))
+            })
+            .collect::<Result<Vec<_>>>()?;
         // println!(
         //     "\nevent should be accepted now. Current kel in controller: {}\n",
         //     String::from_utf8(controller.get_kerl().unwrap().unwrap()).unwrap()
@@ -108,7 +133,7 @@ impl Controller {
 
         // println!("Sending all receipts to witnesses..");
         witness_ips.iter().for_each(|ip| {
-            ureq::post(&format!("http://{}/publish", ip))
+            ureq::post(&format!("{}publish", ip))
                 .send_bytes(flatten_receipts.as_bytes())
                 .unwrap();
         });
@@ -117,7 +142,7 @@ impl Controller {
 
     pub fn rotate(
         &mut self,
-        witness_list: Option<Vec<BasicPrefix>>,
+        witness_list: Option<Vec<WitnessConfig>>,
         witness_threshold: Option<u64>,
     ) -> Result<()> {
         let old_witnesses_config = self
@@ -126,7 +151,7 @@ impl Controller {
             .witness_config;
         let old_witnesses = old_witnesses_config.witnesses;
 
-        let new_threshold = match (witness_list.clone(), witness_threshold) {
+        let new_threshold = match (witness_list.as_ref(), witness_threshold) {
             (None, None) => Ok(old_witnesses_config.tally),
             (None, Some(t)) => {
                 if old_witnesses.len() > t as usize {
@@ -155,25 +180,51 @@ impl Controller {
             }
         }?;
 
-        let (witness_to_add, witness_to_remove) = match witness_list.clone() {
-            Some(new_wits) => (
-                Some(
-                    new_wits
-                        .clone()
-                        .into_iter()
-                        .filter(|w| !old_witnesses.contains(w))
-                        .collect::<Vec<_>>(),
-                ),
-                Some(
-                    old_witnesses
-                        .clone()
-                        .into_iter()
-                        .filter(|w| !new_wits.contains(w))
-                        .collect::<Vec<BasicPrefix>>(),
-                ),
-            ),
+        let (witness_to_add, witness_to_remove) = match witness_list {
+            Some(ref new_wits) => {
+                let new_witness_prefixes = new_wits
+                    .iter()
+                    .map(|conf| conf.get_aid().unwrap())
+                    .collect::<Vec<_>>();
+                (
+                    Some(
+                        new_witness_prefixes
+                            .clone()
+                            .into_iter()
+                            .filter(|w| !old_witnesses.contains(&w))
+                            .collect::<Vec<_>>(),
+                    ),
+                    Some(
+                        old_witnesses
+                            .clone()
+                            .into_iter()
+                            .filter(|w| !new_witness_prefixes.contains(w))
+                            .collect::<Vec<BasicPrefix>>(),
+                    ),
+                )
+            }
             None => (None, None),
         };
+
+        // save witnesses location, because they can not be find in resolvers
+        let wits_prefs = witness_list
+            .unwrap_or_default()
+            .iter()
+            .map(|w| {
+                match w.get_location() {
+                    Ok(loc) => {
+                        self.saved_witnesses
+                            .insert(w.get_aid().unwrap().to_str(), loc);
+                    }
+                    Err(_) => {
+                        // TODO check if resolver got it id?
+                    }
+                };
+                w.get_aid()
+            })
+            .collect::<Result<Vec<_>>>();
+
+        // let wits_prefs = witness_list.map(|w| w.iter().map(|w| w.get_aid().unwrap()).collect());
 
         let rotation_event = self.controller.rotate(
             witness_to_add.as_deref(),
@@ -185,7 +236,7 @@ impl Controller {
         let new_ips = witness_to_add
             .unwrap_or_default()
             .into_iter()
-            .map(|w| -> Result<String> {
+            .map(|w| -> Result<Url> {
                 let witness_ip = Self::get_witness_ip(&self.resolver_addresses, &w);
                 witness_ip
             })
@@ -195,7 +246,7 @@ impl Controller {
         // send them kel and receipts
         let _kel_sending_results = new_ips
             .iter()
-            .map(|ip| ureq::post(&format!("http://{}/publish", ip)).send_bytes(&kerl))
+            .map(|ip| ureq::post(&format!("{}publish", ip)).send_bytes(&kerl))
             .collect::<Vec<_>>();
 
         println!(
@@ -203,11 +254,9 @@ impl Controller {
             String::from_utf8(rotation_event.serialize()?)?
         );
 
-        Self::publish_event(
+        self.publish_event(
             &SignedEventData::from(&rotation_event),
-            &witness_list.unwrap_or(old_witnesses),
-            &self.resolver_addresses,
-            &self.controller,
+            &wits_prefs.unwrap_or(old_witnesses),
         )?;
         println!("\nKeys rotated succesfully.");
 
@@ -263,11 +312,12 @@ impl Controller {
         Ok(())
     }
 
-    pub fn get_witness_ip(resolvers: &[Url], witness: &BasicPrefix) -> Result<String> {
-        #[derive(Serialize, Deserialize, Clone)]
+    pub fn get_witness_ip(resolvers: &[Url], witness: &BasicPrefix) -> Result<Url> {
+        #[derive(Serialize, Clone, Deserialize)]
         struct Ip {
             pub ip: String,
         }
+
         let witness_ip: Option<Ip> = resolvers.iter().find_map(|res| {
             ureq::get(
                 res.join(&format!("witness_ips/{}", witness.to_str()))
@@ -277,11 +327,15 @@ impl Controller {
             .call()
             .unwrap()
             .into_json()
+            .map_err(|e| anyhow::anyhow!(e.to_string()))
             .unwrap()
         });
-        Ok(witness_ip
-            .expect("No such witness in registered resolvers")
-            .ip)
+        Ok(Url::parse(&format!(
+            "http://{}",
+            witness_ip
+                .expect("No such witness in registered resolvers")
+                .ip
+        ))?)
     }
 
     pub fn get_state_from_resolvers(&self, prefix: &IdentifierPrefix) -> Result<IdentifierState> {
