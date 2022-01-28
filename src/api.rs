@@ -1,7 +1,7 @@
 use std::{collections::HashMap, convert::Infallible, sync::Arc};
 
 use acdc::{Attestation, Authored, Hashed, PubKey, Signed};
-use keri::prefix::Prefix;
+use keri::prefix::{BasicPrefix, Prefix};
 use serde::Deserialize;
 use tokio::sync::RwLock;
 use warp::Filter;
@@ -9,11 +9,12 @@ use warp::Filter;
 use crate::{controller::Controller, WitnessConfig};
 
 #[derive(Debug)]
-enum ApiError {
+pub enum ApiError {
     SigningError,
     InvalidAttestation,
     VerificationFailed,
     // InvalidIssuer,
+    MissingIp(BasicPrefix),
     UnknownIssuer,
     SomeError(String),
 }
@@ -158,25 +159,11 @@ async fn attest_receive(
 
     // Verify
     {
-        // let mut dht_node = dht_node.write().await;
-        // let issuer_key = dht_node
-        //     .get(&get_dht_key(attest_issuer.as_bytes()))
-        //     .ok_or(ApiError::InvalidIssuer)?;
-
-        // Controller should provide as a kel/keystate
-
-        // let issuer_key = base64::decode(&issuer_key).map_err(|_| ApiError::InvalidIssuer)?;
-
-        // let keys = {
-        //     let mut keys = HashMap::new();
-        //     keys.insert(attest_issuer.to_owned(), PubKey::ED25519(issuer_key));
-        //     keys
-        // };
-
         let key_config = controller
             .read()
             .await
             .get_public_keys(&attest_issuer.parse().unwrap_or_default())
+            .await
             .map_err(|_e| ApiError::UnknownIssuer)?;
 
         let keys = {
@@ -223,6 +210,7 @@ async fn rotate(
         .write()
         .await
         .rotate(witness_prefixes, rot_data.threshold)
+        .await
         .map_err(|e| ApiError::SomeError(e.to_string()))?;
     let current_kel = controller
         .read()

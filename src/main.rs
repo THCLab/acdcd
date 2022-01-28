@@ -92,7 +92,8 @@ async fn main() -> anyhow::Result<()> {
         bootstrap.known_resolvers.unwrap_or_default(),
         bootstrap.witnesses,
         Some(SignatureThreshold::Simple(bootstrap.witness_threshold)),
-    )?;
+    )
+    .await?;
 
     let controller = Arc::new(RwLock::new(cont));
     let attest_db: AttestationDB = Arc::new(RwLock::new(HashMap::new()));

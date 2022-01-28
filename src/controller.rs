@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::Result;
+use futures::future::{join_all, try_join_all};
 use keri::{
     database::sled::SledEventDatabase,
     derivation::self_signing::SelfSigning,
@@ -27,7 +28,7 @@ pub struct Controller {
 }
 
 impl Controller {
-    pub fn new(
+    pub async fn new(
         db_path: &Path,
         resolver_addresses: Vec<Url>,
         initial_witnesses: Option<Vec<WitnessConfig>>,
@@ -63,7 +64,9 @@ impl Controller {
             resolver_addresses,
             saved_witnesses: locations,
         };
-        controller.publish_event(&icp_event, &ini_witnesses.unwrap_or_default())?;
+        controller
+            .publish_event(&icp_event, &ini_witnesses.unwrap_or_default())
+            .await?;
 
         println!(
             "\nTDA initialized succesfully. \nTda identifier: {}\n",
@@ -73,21 +76,52 @@ impl Controller {
         Ok(controller)
     }
 
-    fn publish_event(&self, event: &SignedEventData, witnesses: &[BasicPrefix]) -> Result<()> {
-        // Get witnesses ip addresses
-        let witness_ips = witnesses
+    async fn get_ips(&self, witnesses: &[BasicPrefix]) -> Result<Vec<Url>> {
+        use crate::api::ApiError;
+        let (oks_ips, to_ask_ips): (_, Vec<Result<_, ApiError>>) = witnesses
             .iter()
-            .map(|w| -> Result<Url> {
-                match self.saved_witnesses.get(&w.to_str()) {
-                    Some(loc) => Ok(loc.to_owned()),
-                    None => {
-                        // ask resolver about ip
-                        Self::get_witness_ip(&self.resolver_addresses, w)
-                    }
+            .map(|w| -> Result<Url, ApiError> {
+                // match
+                self.saved_witnesses
+                    .get(&w.to_str())
+                    .map(|i| i.clone())
+                    .ok_or(ApiError::MissingIp(w.clone()))
+                // {
+                //     Some(loc) => Ok(loc.to_owned()),
+                //     None => {
+                //         // ask resolver about ip
+                //         Self::get_witness_ip(&self.resolver_addresses, w)
+                //     }
+                // }
+            })
+            .partition(Result::is_ok);
+
+        let ask_res = to_ask_ips
+            .iter()
+            .filter_map(|e| {
+                if let Err(ApiError::MissingIp(ip)) = e {
+                    Some(ip)
+                } else {
+                    None
                 }
             })
-            .collect::<Result<Vec<_>>>()?;
+            .map(|ip|
+            // ask resolver about ip
+            Self::get_witness_ip(&self.resolver_addresses, ip));
+        let asked_ips = try_join_all(ask_res).await?;
+        let mut witness_ips: Vec<Url> = oks_ips.into_iter().map(Result::unwrap).collect();
+        witness_ips.extend(asked_ips);
+        Ok(witness_ips)
+    }
 
+    async fn publish_event(
+        &self,
+        event: &SignedEventData,
+        witnesses: &[BasicPrefix],
+    ) -> Result<()> {
+        // Get witnesses ip addresses
+
+        let witness_ips = self.get_ips(witnesses).await?;
         println!(
             "\ngot witness adresses: {:?}",
             witness_ips
@@ -96,25 +130,32 @@ impl Controller {
                 .collect::<Vec<_>>()
         );
 
+        #[derive(Serialize, Deserialize)]
+        struct RespondData {
+            parsed: u64,
+            not_parsed: String,
+            receipts: Vec<String>,
+            errors: Vec<String>,
+        }
+
         // send event to witnesses and collect receipts
-        let witness_receipts = witness_ips
+        let client = reqwest::Client::new();
+        let witness_receipts = try_join_all(witness_ips.iter().map(|ip| {
+            client
+                .post(&format!("{}publish", ip))
+                .body(String::from_utf8(event.to_cesr().unwrap()).unwrap())
+                .send()
+        }))
+        .await?
+        .into_iter()
+        .map(|r| r.json::<RespondData>());
+
+        let witness_receipts = try_join_all(witness_receipts)
+            .await
+            .unwrap()
             .iter()
-            .map(|ip| -> Result<String> {
-                let kel = ureq::post(&format!("{}publish", ip)).send_bytes(&event.to_cesr()?);
-                #[derive(Serialize, Deserialize)]
-                struct RespondData {
-                    parsed: u64,
-                    not_parsed: String,
-                    receipts: Vec<String>,
-                    errors: Vec<String>,
-                }
-                let wit_res: Result<RespondData, _> = kel?.into_json();
-                wit_res
-                    .map(|r| r.receipts.join(""))
-                    .map_err(|e| anyhow::anyhow!(e.to_string()))
-            })
-            // .flatten()
-            .collect::<Result<Vec<_>>>()?;
+            .map(|r| r.receipts.join(""))
+            .collect::<Vec<_>>();
 
         println!("\ngot {} witness receipts...", witness_receipts.len());
 
@@ -134,15 +175,17 @@ impl Controller {
         // );
 
         // println!("Sending all receipts to witnesses..");
-        witness_ips.iter().for_each(|ip| {
-            ureq::post(&format!("{}publish", ip))
-                .send_bytes(flatten_receipts.as_bytes())
-                .unwrap();
-        });
+        try_join_all(witness_ips.iter().map(|ip| {
+            client
+                .post(&format!("{}publish", ip))
+                .body(flatten_receipts.clone())
+                .send()
+        }))
+        .await?;
         Ok(())
     }
 
-    pub fn rotate(
+    pub async fn rotate(
         &mut self,
         witness_list: Option<Vec<WitnessConfig>>,
         witness_threshold: Option<u64>,
@@ -232,18 +275,20 @@ impl Controller {
         )?;
         // send kerl and witness receipts to the new witnesses
         // Get new witnesses address
-        let new_ips = witness_to_add
-            .unwrap_or_default()
-            .into_iter()
-            .map(|w| -> Result<Url> { Self::get_witness_ip(&self.resolver_addresses, &w) })
-            .collect::<Result<Vec<_>>>()?;
+
+        let new_ips = self.get_ips(&witness_to_add.unwrap()).await?;
 
         let kerl: Vec<u8> = [self.get_kel()?.as_bytes(), &self.get_receipts()?].concat();
+
         // send them kel and receipts
-        let _kel_sending_results = new_ips
-            .iter()
-            .map(|ip| ureq::post(&format!("{}publish", ip)).send_bytes(&kerl))
-            .collect::<Vec<_>>();
+        let client = reqwest::Client::new();
+        let _kel_sending_results = for ip in new_ips {
+            client
+                .post(&format!("{}publish", ip))
+                .body(String::from_utf8(kerl.clone()).unwrap())
+                .send()
+                .await?;
+        };
 
         println!(
             "\nRotation event:\n{}",
@@ -253,7 +298,8 @@ impl Controller {
         self.publish_event(
             &SignedEventData::from(&rotation_event),
             &wits_prefs.unwrap_or(old_witnesses),
-        )?;
+        )
+        .await?;
         println!("\nKeys rotated succesfully.");
 
         Ok(())
@@ -273,13 +319,13 @@ impl Controller {
         ))
     }
 
-    pub fn _verify(
+    pub async fn _verify(
         &self,
         issuer: &IdentifierPrefix,
         message: &[u8],
         signatures: &[AttachedSignaturePrefix],
     ) -> Result<()> {
-        let key_config = self.get_public_keys(issuer)?;
+        let key_config = self.get_public_keys(issuer).await?;
         key_config.verify(message, signatures)?;
 
         // Logic for determining the index of the signature
@@ -308,52 +354,71 @@ impl Controller {
         Ok(())
     }
 
-    pub fn get_witness_ip(resolvers: &[Url], witness: &BasicPrefix) -> Result<Url> {
+    pub async fn get_witness_ip(resolvers: &[Url], witness: &BasicPrefix) -> Result<Url> {
         #[derive(Serialize, Clone, Deserialize)]
         struct Ip {
             pub ip: String,
         }
 
-        let witness_ip: Option<Ip> = resolvers.iter().find_map(|res| {
-            ureq::get(
-                res.join(&format!("witness_ips/{}", witness.to_str()))
-                    .unwrap()
-                    .as_str(),
+        let witness_ip = join_all(
+            try_join_all(
+                resolvers
+                    .to_vec()
+                    .into_iter()
+                    .map(|ip| reqwest::get(format!("{}witness_ips/{}", ip, witness.to_str()))),
             )
-            .call()
-            .unwrap()
-            .into_json()
-            .map_err(|e| anyhow::anyhow!(e.to_string()))
-            .unwrap()
-        });
+            .await?
+            .into_iter()
+            .map(|r| r.json::<Ip>()),
+        )
+        .await
+        .into_iter()
+        .find(|ip| ip.is_ok());
+        // let ip_responses: Vec<_> = try_join_all(resolvers.iter().find_map(|res| {
+        //     reqwest::get(
+        //         res.join(&format!("witness_ips/{}", witness.to_str()))
+        //             .unwrap()
+        //             .as_str(),
+        //     )})).await?;
+        //     ip_responses.iter().map(|res| res.json());
+        //     // .json()
+        //     // .map_err(|e| anyhow::anyhow!(e.to_string()))
+        //     // .unwrap()
+
         Ok(Url::parse(&format!(
             "http://{}",
             witness_ip
+                .expect("No such witness in registered resolvers")
                 .expect("No such witness in registered resolvers")
                 .ip
         ))?)
     }
 
-    pub fn get_state_from_resolvers(&self, prefix: &IdentifierPrefix) -> Result<IdentifierState> {
-        let state_from_resolvers: String = self
-            .resolver_addresses
-            .iter()
-            .find_map(|res| {
-                ureq::get(&format!("{}/key_states/{}", res, prefix.to_str()))
-                    .call()
-                    .unwrap()
-                    .into_json()
-                    .unwrap()
-            })
-            .ok_or(anyhow::anyhow!("State can't be found in resolvers"))?;
-        println!("\nAsk resolver about state: {}", state_from_resolvers);
-        let state_from_resolver: Result<IdentifierState, _> =
-            serde_json::from_str(&state_from_resolvers);
+    pub async fn get_state_from_resolvers(
+        &self,
+        prefix: &IdentifierPrefix,
+    ) -> Result<IdentifierState> {
+        let state = join_all(
+            try_join_all(
+                self.resolver_addresses
+                    .to_vec()
+                    .into_iter()
+                    .map(|ip| reqwest::get(format!("{}key_states/{}", ip, prefix.to_str()))),
+            )
+            .await?
+            .into_iter()
+            .map(|r| r.json::<IdentifierState>()),
+        )
+        .await
+        .into_iter()
+        .find(|state| state.is_ok());
 
-        Ok(state_from_resolver?)
+        state
+            .ok_or(anyhow::anyhow!(""))?
+            .map_err(|e| anyhow::anyhow!(e.to_string()))
     }
 
-    pub fn get_public_keys(&self, issuer: &IdentifierPrefix) -> Result<KeyConfig> {
+    pub async fn get_public_keys(&self, issuer: &IdentifierPrefix) -> Result<KeyConfig> {
         match self.controller.get_state_for_prefix(issuer)? {
             Some(state) => {
                 // probably should ask resolver if we have most recent keyconfig
@@ -362,7 +427,7 @@ impl Controller {
             None => {
                 // no state, we should ask resolver about kel/state
                 let state_from_resolver = self.get_state_from_resolvers(issuer);
-                Ok(state_from_resolver?.current)
+                Ok(state_from_resolver.await?.current)
             }
         }
     }
