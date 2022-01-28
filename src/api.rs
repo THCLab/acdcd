@@ -1,7 +1,7 @@
 use std::{collections::HashMap, convert::Infallible, sync::Arc};
 
 use acdc::{Attestation, Authored, Hashed, PubKey, Signed};
-use keri::prefix::{BasicPrefix, Prefix};
+use keri::prefix::Prefix;
 use serde::Deserialize;
 use tokio::sync::RwLock;
 use warp::Filter;
@@ -14,7 +14,6 @@ pub enum ApiError {
     InvalidAttestation,
     VerificationFailed,
     // InvalidIssuer,
-    MissingIp(BasicPrefix),
     UnknownIssuer,
     SomeError(String),
 }

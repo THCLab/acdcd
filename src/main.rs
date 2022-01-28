@@ -87,7 +87,7 @@ async fn main() -> anyhow::Result<()> {
         _ => Ok(()),
     }?;
 
-    let cont = Controller::new(
+    let cont = Controller::init(
         &kel_db_path,
         bootstrap.known_resolvers.unwrap_or_default(),
         bootstrap.witnesses,

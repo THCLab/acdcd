@@ -21,6 +21,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Url, WitnessConfig};
 
+#[derive(Debug)]
+pub enum ControllerError {
+    MissingIp(BasicPrefix),
+}
+
 pub struct Controller {
     resolver_addresses: Vec<Url>,
     saved_witnesses: HashMap<String, Url>,
@@ -28,44 +33,37 @@ pub struct Controller {
 }
 
 impl Controller {
-    pub async fn new(
+    pub fn new(db_path: &Path, resolver_addresses: Vec<Url>) -> Result<Self> {
+        let db = Arc::new(SledEventDatabase::new(db_path)?);
+
+        let key_manager = { Arc::new(Mutex::new(CryptoBox::new()?)) };
+        let keri_controller = Keri::new(Arc::clone(&db), key_manager)?;
+
+        Ok(Controller {
+            controller: keri_controller,
+            resolver_addresses,
+            saved_witnesses: HashMap::new(),
+        })
+    }
+
+    pub async fn init(
         db_path: &Path,
         resolver_addresses: Vec<Url>,
         initial_witnesses: Option<Vec<WitnessConfig>>,
         initial_threshold: Option<SignatureThreshold>,
     ) -> Result<Self> {
-        let db = Arc::new(SledEventDatabase::new(db_path)?);
+        let mut controller = Controller::new(db_path, resolver_addresses)?;
+        let initial_witnesses_prefixes =
+            controller.save_witness_data(&initial_witnesses.unwrap_or_default())?;
 
-        let key_manager = { Arc::new(Mutex::new(CryptoBox::new()?)) };
-        let mut keri_controller = Keri::new(Arc::clone(&db), key_manager)?;
-        // save witnesses location, because they can not be find in resolvers
-        let mut locations = HashMap::new();
-        let ini_witnesses = initial_witnesses.map(|witnesses| {
-            witnesses
-                .iter()
-                .map(|w| {
-                    if let Ok(loc) = w.get_location() {
-                        locations.insert(w.get_aid().unwrap().to_str(), loc);
-                    } else {
-                        // TODO check if resolver has this id?
-                    };
-                    w.get_aid()
-                })
-                .collect::<Result<Vec<_>>>()
-                .unwrap()
-        });
-
-        let icp_event: SignedEventData =
-            (&keri_controller.incept(ini_witnesses.clone(), initial_threshold)?).into();
+        let icp_event: SignedEventData = (&controller
+            .controller
+            .incept(Some(initial_witnesses_prefixes.clone()), initial_threshold)?)
+            .into();
         println!("\nInception event generated and signed...");
 
-        let controller = Controller {
-            controller: keri_controller,
-            resolver_addresses,
-            saved_witnesses: locations,
-        };
         controller
-            .publish_event(&icp_event, &ini_witnesses.unwrap_or_default())
+            .publish_event(&icp_event, &initial_witnesses_prefixes)
             .await?;
 
         println!(
@@ -77,40 +75,35 @@ impl Controller {
     }
 
     async fn get_ips(&self, witnesses: &[BasicPrefix]) -> Result<Vec<Url>> {
-        use crate::api::ApiError;
-        let (oks_ips, to_ask_ips): (_, Vec<Result<_, ApiError>>) = witnesses
+        // Try to get ip addresses for witnesses by checking self.saved_witnesses.
+        let (found_ips, missing_ips): (_, Vec<Result<_, ControllerError>>) = witnesses
             .iter()
-            .map(|w| -> Result<Url, ApiError> {
-                // match
+            .map(|w| -> Result<Url, ControllerError> {
                 self.saved_witnesses
                     .get(&w.to_str())
                     .map(|i| i.clone())
-                    .ok_or(ApiError::MissingIp(w.clone()))
-                // {
-                //     Some(loc) => Ok(loc.to_owned()),
-                //     None => {
-                //         // ask resolver about ip
-                //         Self::get_witness_ip(&self.resolver_addresses, w)
-                //     }
-                // }
+                    .ok_or(ControllerError::MissingIp(w.clone()))
             })
             .partition(Result::is_ok);
 
-        let ask_res = to_ask_ips
-            .iter()
-            .filter_map(|e| {
-                if let Err(ApiError::MissingIp(ip)) = e {
-                    Some(ip)
-                } else {
-                    None
-                }
-            })
-            .map(|ip|
+        let adresses_from_resolver = try_join_all(
+            missing_ips
+                .iter()
+                .filter_map(|e| {
+                    if let Err(ControllerError::MissingIp(ip)) = e {
+                        Some(ip)
+                    } else {
+                        None
+                    }
+                })
+                .map(|ip|
             // ask resolver about ip
-            Self::get_witness_ip(&self.resolver_addresses, ip));
-        let asked_ips = try_join_all(ask_res).await?;
-        let mut witness_ips: Vec<Url> = oks_ips.into_iter().map(Result::unwrap).collect();
-        witness_ips.extend(asked_ips);
+            Self::get_witness_ip(&self.resolver_addresses, ip)),
+        )
+        .await?;
+        // Join found ips and asked ips
+        let mut witness_ips: Vec<Url> = found_ips.into_iter().map(Result::unwrap).collect();
+        witness_ips.extend(adresses_from_resolver);
         Ok(witness_ips)
     }
 
@@ -119,8 +112,6 @@ impl Controller {
         event: &SignedEventData,
         witnesses: &[BasicPrefix],
     ) -> Result<()> {
-        // Get witnesses ip addresses
-
         let witness_ips = self.get_ips(witnesses).await?;
         println!(
             "\ngot witness adresses: {:?}",
@@ -130,6 +121,7 @@ impl Controller {
                 .collect::<Vec<_>>()
         );
 
+        /// Helper struct for deserializing data provided by witnesses
         #[derive(Serialize, Deserialize)]
         struct RespondData {
             parsed: u64,
@@ -159,7 +151,6 @@ impl Controller {
 
         println!("\ngot {} witness receipts...", witness_receipts.len());
 
-        let flatten_receipts = witness_receipts.join("");
         // process receipts and send them to all of the witnesses
         let _processing = witness_receipts
             .iter()
@@ -169,20 +160,34 @@ impl Controller {
                     .map_err(|e| anyhow::anyhow!(e.to_string()))
             })
             .collect::<Result<Vec<_>>>()?;
-        // println!(
-        //     "\nevent should be accepted now. Current kel in controller: {}\n",
-        //     String::from_utf8(controller.get_kerl().unwrap().unwrap()).unwrap()
-        // );
 
-        // println!("Sending all receipts to witnesses..");
         try_join_all(witness_ips.iter().map(|ip| {
             client
                 .post(&format!("{}publish", ip))
-                .body(flatten_receipts.clone())
+                .body(witness_receipts.join(""))
                 .send()
         }))
         .await?;
         Ok(())
+    }
+
+    pub fn save_witness_data(
+        &mut self,
+        witness_config: &[WitnessConfig],
+    ) -> Result<Vec<BasicPrefix>> {
+        // save witnesses location, because they can not be find in resolvers
+        witness_config
+            .iter()
+            .map(|w| {
+                if let Ok(loc) = w.get_location() {
+                    self.saved_witnesses
+                        .insert(w.get_aid().unwrap().to_str(), loc);
+                } else {
+                    // TODO check if resolver got it id?
+                };
+                w.get_aid()
+            })
+            .collect::<Result<Vec<_>>>()
     }
 
     pub async fn rotate(
@@ -190,14 +195,17 @@ impl Controller {
         witness_list: Option<Vec<WitnessConfig>>,
         witness_threshold: Option<u64>,
     ) -> Result<()> {
-        let old_witnesses_config = self
-            .get_state()?
-            .ok_or(anyhow::anyhow!("There's no state in database"))?
-            .witness_config;
-        let old_witnesses = old_witnesses_config.witnesses;
+        let (old_witnesses, old_threshold) = {
+            let old_witnesses_config = self
+                .get_state()?
+                .ok_or(anyhow::anyhow!("There's no state in database"))?
+                .witness_config;
+            (old_witnesses_config.witnesses, old_witnesses_config.tally)
+        };
 
+        // Check threshold
         let new_threshold = match (witness_list.as_ref(), witness_threshold) {
-            (None, None) => Ok(old_witnesses_config.tally),
+            (None, None) => Ok(old_threshold),
             (None, Some(t)) => {
                 if old_witnesses.len() > t as usize {
                     Err(anyhow::anyhow!("Improper thrreshold"))
@@ -206,11 +214,11 @@ impl Controller {
                 }
             }
             (Some(wits), None) => {
-                if let SignatureThreshold::Simple(t) = old_witnesses_config.tally {
+                if let SignatureThreshold::Simple(t) = old_threshold {
                     if t > wits.len() as u64 {
                         Err(anyhow::anyhow!("Improper threshold"))
                     } else {
-                        Ok(old_witnesses_config.tally)
+                        Ok(old_threshold)
                     }
                 } else {
                     Err(anyhow::anyhow!("Improper threshold"))
@@ -251,36 +259,14 @@ impl Controller {
             None => (None, None),
         };
 
-        // save witnesses location, because they can not be find in resolvers
-        let wits_prefs = witness_list
-            .unwrap_or_default()
-            .iter()
-            .map(|w| {
-                if let Ok(loc) = w.get_location() {
-                    self.saved_witnesses
-                        .insert(w.get_aid().unwrap().to_str(), loc);
-                } else {
-                    // TODO check if resolver got it id?
-                };
-                w.get_aid()
-            })
-            .collect::<Result<Vec<_>>>();
+        let wits_prefs = self.save_witness_data(&witness_list.unwrap_or_default())?;
 
-        // let wits_prefs = witness_list.map(|w| w.iter().map(|w| w.get_aid().unwrap()).collect());
-
-        let rotation_event = self.controller.rotate(
-            witness_to_add.as_deref(),
-            witness_to_remove.as_deref(),
-            Some(new_threshold),
-        )?;
-        // send kerl and witness receipts to the new witnesses
-        // Get new witnesses address
-
-        let new_ips = self.get_ips(&witness_to_add.unwrap()).await?;
+        // Get new witnesses address and kerl
+        let new_ips = self.get_ips(&witness_to_add.as_ref().unwrap()).await?;
 
         let kerl: Vec<u8> = [self.get_kel()?.as_bytes(), &self.get_receipts()?].concat();
 
-        // send them kel and receipts
+        // Send kerl and witness receipts to the new witnesses
         let client = reqwest::Client::new();
         let _kel_sending_results = for ip in new_ips {
             client
@@ -290,6 +276,12 @@ impl Controller {
                 .await?;
         };
 
+        let rotation_event = self.controller.rotate(
+            witness_to_add.as_deref(),
+            witness_to_remove.as_deref(),
+            Some(new_threshold),
+        )?;
+
         println!(
             "\nRotation event:\n{}",
             String::from_utf8(rotation_event.serialize()?)?
@@ -297,7 +289,11 @@ impl Controller {
 
         self.publish_event(
             &SignedEventData::from(&rotation_event),
-            &wits_prefs.unwrap_or(old_witnesses),
+            &if wits_prefs.is_empty() {
+                old_witnesses
+            } else {
+                wits_prefs
+            },
         )
         .await?;
         println!("\nKeys rotated succesfully.");
@@ -374,22 +370,12 @@ impl Controller {
         .await
         .into_iter()
         .find(|ip| ip.is_ok());
-        // let ip_responses: Vec<_> = try_join_all(resolvers.iter().find_map(|res| {
-        //     reqwest::get(
-        //         res.join(&format!("witness_ips/{}", witness.to_str()))
-        //             .unwrap()
-        //             .as_str(),
-        //     )})).await?;
-        //     ip_responses.iter().map(|res| res.json());
-        //     // .json()
-        //     // .map_err(|e| anyhow::anyhow!(e.to_string()))
-        //     // .unwrap()
 
         Ok(Url::parse(&format!(
             "http://{}",
             witness_ip
                 .expect("No such witness in registered resolvers")
-                .expect("No such witness in registered resolvers")
+                .unwrap()
                 .ip
         ))?)
     }
