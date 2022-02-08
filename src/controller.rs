@@ -405,6 +405,25 @@ impl Controller {
     }
 
     pub async fn get_public_keys(&self, issuer: &IdentifierPrefix) -> Result<KeyConfig> {
+        let log = join_all(
+            try_join_all(
+                self.resolver_addresses
+                    .to_vec()
+                    .into_iter()
+                    .map(|ip| reqwest::get(format!("{}key_logs/{}", ip, issuer.to_str()))),
+            )
+            .await?
+            .into_iter()
+            .map(|r| r.bytes()),
+        )
+        .await
+        .into_iter()
+        .filter_map(Result::ok)
+        .next()
+        .ok_or(anyhow::anyhow!("Can't find key event log"))?;
+
+        self.controller.respond(&log);
+
         match self.controller.get_state_for_prefix(issuer)? {
             Some(state) => {
                 // probably should ask resolver if we have most recent keyconfig
