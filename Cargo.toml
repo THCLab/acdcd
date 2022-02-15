@@ -6,9 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-acdc = { git = "https://github.com/THCLab/acdc-rust", branch = "keriox_feature", features = [
-    "keriox",
-] }
+acdc = { git = "https://github.com/THCLab/acdc-rust", features = ["keriox"] }
 keri = { git = "ssh://git@github.com/THCLab/keriox.git" }
 anyhow = "1.0.51"
 env_logger = "0.9.0"
