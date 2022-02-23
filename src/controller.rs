@@ -430,7 +430,7 @@ impl Controller {
         };
 
         self.controller
-            .respond(&log)
+            .parse_and_process(&log) 
             .context("Can't parse key event log")?;
 
         match self.controller.get_state_for_prefix(issuer)? {
