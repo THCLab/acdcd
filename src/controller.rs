@@ -1,11 +1,10 @@
 use std::{
-    collections::HashMap,
     path::Path,
     sync::{Arc, Mutex},
 };
 
 use anyhow::{Context, Result};
-use futures::future::{join_all, try_join_all};
+use futures::future::try_join_all;
 use keri::{
     database::sled::SledEventDatabase,
     derivation::self_signing::SelfSigning,
@@ -13,7 +12,9 @@ use keri::{
     event::sections::{threshold::SignatureThreshold, KeyConfig},
     event_parsing::SignedEventData,
     keri::Keri,
+    oobi::OobiManager,
     prefix::{AttachedSignaturePrefix, BasicPrefix, IdentifierPrefix, Prefix},
+    processor::validator::EventValidator,
     signer::{CryptoBox, KeyManager},
     state::IdentifierState,
 };
@@ -27,34 +28,32 @@ pub enum ControllerError {
 }
 
 pub struct Controller {
-    resolver_addresses: Vec<Url>,
-    saved_witnesses: HashMap<String, Url>,
     controller: Keri<CryptoBox>,
+    oobi_manager: OobiManager,
 }
 
 impl Controller {
-    pub fn new(db_path: &Path, resolver_addresses: Vec<Url>) -> Result<Self> {
+    pub fn new(db_path: &Path) -> Result<Self> {
         let db = Arc::new(SledEventDatabase::new(db_path)?);
 
         let key_manager = { Arc::new(Mutex::new(CryptoBox::new()?)) };
         let keri_controller = Keri::new(Arc::clone(&db), key_manager)?;
-
+        let validator = EventValidator::new(db);
         Ok(Controller {
             controller: keri_controller,
-            resolver_addresses,
-            saved_witnesses: HashMap::new(),
+            oobi_manager: OobiManager::new(validator),
         })
     }
 
     pub async fn init(
         db_path: &Path,
-        resolver_addresses: Vec<Url>,
         initial_witnesses: Option<Vec<WitnessConfig>>,
         initial_threshold: Option<SignatureThreshold>,
     ) -> Result<Self> {
-        let mut controller = Controller::new(db_path, resolver_addresses)?;
-        let initial_witnesses_prefixes =
-            controller.save_witness_data(&initial_witnesses.unwrap_or_default())?;
+        let mut controller = Controller::new(db_path)?;
+        let initial_witnesses_prefixes = controller
+            .save_witness_data(&initial_witnesses.unwrap_or_default())
+            .await?;
 
         let icp_event: SignedEventData = (&controller
             .controller
@@ -75,18 +74,26 @@ impl Controller {
     }
 
     async fn get_ips(&self, witnesses: &[BasicPrefix]) -> Result<Vec<Url>> {
-        // Try to get ip addresses for witnesses by checking self.saved_witnesses.
-        let (found_ips, missing_ips): (_, Vec<Result<_, ControllerError>>) = witnesses
+        // Try to get ip addresses for witnesses.
+        let (found_ips, missing_ips): (_, Vec<Result<_, _>>) = witnesses
             .iter()
             .map(|w| -> Result<Url, ControllerError> {
-                self.saved_witnesses
-                    .get(&w.to_str())
-                    .map(|i| i.clone())
-                    .ok_or(ControllerError::MissingIp(w.clone()))
+                match self
+                    .oobi_manager
+                    .get_oobi(&IdentifierPrefix::Basic(w.clone()))
+                {
+                    Some(oobi) => Ok(Url::parse(&format!(
+                        "http://{}",
+                        &oobi.event.content.data.data.get_url()
+                    ))
+                    .unwrap()),
+                    None => Err(ControllerError::MissingIp(w.clone())),
+                }
             })
             .partition(Result::is_ok);
 
-        let adresses_from_resolver = try_join_all(
+        let adresses_from_resolver = 
+        // try_join_all(
             missing_ips
                 .iter()
                 .filter_map(|e| {
@@ -95,15 +102,12 @@ impl Controller {
                     } else {
                         None
                     }
-                })
-                .map(|ip|
-            // ask resolver about ip
-            Self::get_witness_ip(&self.resolver_addresses, ip)),
-        )
-        .await?;
+                }
+            );
+
         // Join found ips and asked ips
         let mut witness_ips: Vec<Url> = found_ips.into_iter().map(Result::unwrap).collect();
-        witness_ips.extend(adresses_from_resolver);
+        // witness_ips.extend(adresses_from_resolver);
         Ok(witness_ips)
     }
 
@@ -159,7 +163,8 @@ impl Controller {
                     .respond_single(rct.as_bytes())
                     .map_err(|e| anyhow::anyhow!(e.to_string()))
             })
-            .collect::<Result<Vec<_>>>()?;
+            .filter_map(|r| r.ok())
+            .collect::<Vec<_>>();
 
         try_join_all(witness_ips.iter().map(|ip| {
             client
@@ -171,23 +176,44 @@ impl Controller {
         Ok(())
     }
 
-    pub fn save_witness_data(
+    pub async fn save_witness_data(
         &mut self,
         witness_config: &[WitnessConfig],
     ) -> Result<Vec<BasicPrefix>> {
+        // resolve witnesses oobi
+        // TODO load oobis from config file
         // save witnesses location, because they can not be find in resolvers
-        witness_config
+        let prefs = witness_config
             .iter()
             .map(|w| {
-                if let Ok(loc) = w.get_location() {
-                    self.saved_witnesses
-                        .insert(w.get_aid().unwrap().to_str(), loc);
-                } else {
-                    // TODO check if resolver got it id?
+                let (prefix, location) = match (w.get_aid(), w.get_location()) {
+                    (Ok(aid), Ok(location)) => (aid, location),
+                    (Ok(aid), Err(_)) => {
+                        let loc = Url::parse(
+                            &self
+                                .oobi_manager
+                                .get_oobi(&IdentifierPrefix::Basic(aid.clone()))
+                                .unwrap()
+                                .event
+                                .content
+                                .data
+                                .data
+                                .get_url(),
+                        )
+                        .unwrap();
+                        (aid, loc)
+                    }
+                    (Err(_), Ok(_)) => todo!(),
+                    (Err(_), Err(_)) => todo!(),
                 };
-                w.get_aid()
+                let oobi_url = format!("{}oobi/{}", location, prefix.to_str());
+                println!("\n\noobi: {}", oobi_url);
+                self.oobi_manager.process_oobi(&oobi_url).unwrap();
+                w.get_aid().unwrap()
             })
-            .collect::<Result<Vec<_>>>()
+            .collect::<Vec<_>>();
+        self.oobi_manager.load().await?;
+        Ok(prefs)
     }
 
     pub async fn rotate(
@@ -259,10 +285,12 @@ impl Controller {
             None => (None, None),
         };
 
-        let wits_prefs = self.save_witness_data(&witness_list.unwrap_or_default())?;
+        let wits_prefs = self
+            .save_witness_data(&witness_list.unwrap_or_default())
+            .await?;
 
         // Get new witnesses address and kerl
-        let new_ips = self.get_ips(&witness_to_add.as_ref().unwrap()).await?;
+        let new_ips = self.get_ips(witness_to_add.as_ref().unwrap()).await?;
 
         let kerl: Vec<u8> = [self.get_kel()?.as_bytes(), &self.get_receipts()?].concat();
 
@@ -310,7 +338,7 @@ impl Controller {
                 .lock()
                 .map_err(|_| Error::MutexPoisoned)?
                 .sign(data)?,
-            // asume just one key for now
+            // assume just one key for now
             0,
         ))
     }
@@ -353,84 +381,44 @@ impl Controller {
         Ok(())
     }
 
-    pub async fn get_witness_ip(resolvers: &[Url], witness: &BasicPrefix) -> Result<Url> {
-        #[derive(Serialize, Clone, Deserialize)]
-        struct Ip {
-            pub ip: String,
-        }
-
-        let witness_ip = join_all(
-            try_join_all(
-                resolvers
-                    .to_vec()
-                    .into_iter()
-                    .map(|ip| reqwest::get(format!("{}witness_ips/{}", ip, witness.to_str()))),
-            )
-            .await?
-            .into_iter()
-            .map(|r| r.json::<Ip>()),
-        )
-        .await
-        .into_iter()
-        .find(|ip| ip.is_ok());
-
-        Ok(Url::parse(&format!(
-            "http://{}",
-            witness_ip
-                .expect("No such witness in registered resolvers")
-                .unwrap()
-                .ip
-        ))?)
-    }
-
     pub async fn get_state_from_resolvers(
         &self,
         prefix: &IdentifierPrefix,
     ) -> Result<IdentifierState> {
-        let state = join_all(
-            try_join_all(
-                self.resolver_addresses
-                    .to_vec()
-                    .into_iter()
-                    .map(|ip| reqwest::get(format!("{}key_states/{}", ip, prefix.to_str()))),
-            )
+        let oobi_address = self
+            .oobi_manager
+            .get_oobi(prefix)
+            .unwrap()
+            .event
+            .content
+            .data
+            .data
+            .get_url();
+        reqwest::get(format!("{}key_states/{}", oobi_address, prefix.to_str()))
             .await?
-            .into_iter()
-            .map(|r| r.json::<IdentifierState>()),
-        )
-        .await
-        .into_iter()
-        .find(|state| state.is_ok());
-
-        state
-            .ok_or(anyhow::anyhow!(""))?
+            .json::<IdentifierState>()
+            .await
             .map_err(|e| anyhow::anyhow!(e.to_string()))
     }
 
     pub async fn get_public_keys(&self, issuer: &IdentifierPrefix) -> Result<Option<KeyConfig>> {
-        let log = join_all(
-            try_join_all(
-                self.resolver_addresses
-                    .to_vec()
-                    .into_iter()
-                    .map(|ip| reqwest::get(format!("{}key_logs/{}", ip, issuer.to_str()))),
-            )
+        let oobi_address = self
+            .oobi_manager
+            .get_oobi(issuer)
+            .unwrap()
+            .event
+            .content
+            .data
+            .data
+            .get_url();
+        let log = reqwest::get(format!("{}key_logs/{}", oobi_address, issuer.to_str()))
             .await?
-            .into_iter()
-            .map(|r| r.bytes()),
-        )
-        .await
-        .into_iter()
-        .filter_map(Result::ok)
-        .next();
-
-        let log = match log {
-            Some(log) => log,
-            None => return Ok(None),
-        };
+            .bytes()
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
         self.controller
-            .parse_and_process(&log) 
+            .parse_and_process(&log)
             .context("Can't parse key event log")?;
 
         match self.controller.get_state_for_prefix(issuer)? {

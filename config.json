@@ -6,9 +6,9 @@
   	"witness_threshold": 1,
   	"witnesses": [
        { 
-         "aid": "DUbyCAUPn-UhwEF8sJDlp_HRxtn5YVygpXFc7VpU5c_0"
+         "aid": "BMOaOdnrbEP-MSQE_CaL7BhGXvqvIdoHEMYcOnUAWjOE",
+		 "location":"http://127.0.0.1:3232"
        }
-    ],
-	  "known_resolvers": ["http://127.0.0.1:9599"]
+    ]
   }
 }

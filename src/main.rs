@@ -29,7 +29,6 @@ struct Config {
 #[derive(Deserialize)]
 struct BootstrapConfig {
     witnesses: Option<Vec<WitnessConfig>>,
-    known_resolvers: Option<Vec<Url>>,
     witness_threshold: u64,
 }
 
@@ -89,7 +88,6 @@ async fn main() -> anyhow::Result<()> {
 
     let cont = Controller::init(
         &kel_db_path,
-        bootstrap.known_resolvers.unwrap_or_default(),
         bootstrap.witnesses,
         Some(SignatureThreshold::Simple(bootstrap.witness_threshold)),
     )
