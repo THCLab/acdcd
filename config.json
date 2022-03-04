@@ -8,6 +8,10 @@
        { 
          "aid": "BMOaOdnrbEP-MSQE_CaL7BhGXvqvIdoHEMYcOnUAWjOE",
 		 "location":"http://127.0.0.1:3232"
+       },
+	   { 
+         "aid": "BZFIYlHDQAHxHH3TJsjMhZFbVR_knDzSc3na_VHBZSBs",
+		 "location":"http://127.0.0.1:3233"
        }
     ]
   }

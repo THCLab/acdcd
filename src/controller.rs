@@ -182,7 +182,6 @@ impl Controller {
     ) -> Result<Vec<BasicPrefix>> {
         // resolve witnesses oobi
         // TODO load oobis from config file
-        // save witnesses location, because they can not be find in resolvers
         let prefs = witness_config
             .iter()
             .map(|w| {
