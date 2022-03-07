@@ -1,14 +1,14 @@
 {
-	"api_port": 13434,
-	"api_host": "0.0.0.0",
-	"kel_db_path": "/tmp/path",
+  "api_host": "0.0.0.0",
+  "api_port": 13434,
   "bootstrap": {
-  	"witness_threshold": 1,
-  	"witnesses": [
-       { 
-         "aid": "DUbyCAUPn-UhwEF8sJDlp_HRxtn5YVygpXFc7VpU5c_0"
-       }
-    ],
-	  "known_resolvers": ["http://127.0.0.1:9599"]
-  }
+    "known_resolvers": ["http://0.0.0.0:9599"],
+    "witness_threshold": 1,
+    "witnesses": [
+      {
+        "aid": "DL8Dmlz50vA63X_VKSdyQcioFmnvD7yQ3lgkNSS1nABc"
+      }
+    ]
+  },
+  "kel_db_path": "/tmp/path"
 }

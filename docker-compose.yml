@@ -1,0 +1,28 @@
+version: "3.9"
+
+# Work in progress
+# Remaining issues
+# - SSH keys needed to download dependencies
+
+services:
+
+  tda-daemon:
+    image: .
+    ports:
+      - "13434"
+    volumes:
+      - ./config.json:/config.json
+
+  dkms-resolver:
+    image: ../dkms-resolver
+    ports:
+      - "9599"
+      - "9145"
+
+  keri-witness:
+    image: ../keri-witness-http
+    ports:
+      - "3030"
+    environment:
+      WITNESS_PRIV_KEY: "2547a4d5b0ddbe55d04b1258aadd3fed3000f561f8574e2f246c59ef1a36f027"
+      DKMS_RESOLVER_ENDPOINT: "0.0.0.0:9599"
