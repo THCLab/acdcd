@@ -4,7 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use futures::future::{join_all, try_join_all};
 use keri::{
     database::sled::SledEventDatabase,
@@ -321,7 +321,10 @@ impl Controller {
         message: &[u8],
         signatures: &[AttachedSignaturePrefix],
     ) -> Result<()> {
-        let key_config = self.get_public_keys(issuer).await?;
+        let key_config = self
+            .get_public_keys(issuer)
+            .await?
+            .ok_or(anyhow::anyhow!("Can't find issuer's keys"))?;
         key_config.verify(message, signatures)?;
 
         // Logic for determining the index of the signature
@@ -404,17 +407,35 @@ impl Controller {
             .map_err(|e| anyhow::anyhow!(e.to_string()))
     }
 
-    pub async fn get_public_keys(&self, issuer: &IdentifierPrefix) -> Result<KeyConfig> {
+    pub async fn get_public_keys(&self, issuer: &IdentifierPrefix) -> Result<Option<KeyConfig>> {
+        let log = join_all(
+            try_join_all(
+                self.resolver_addresses
+                    .to_vec()
+                    .into_iter()
+                    .map(|ip| reqwest::get(format!("{}key_logs/{}", ip, issuer.to_str()))),
+            )
+            .await?
+            .into_iter()
+            .map(|r| r.bytes()),
+        )
+        .await
+        .into_iter()
+        .filter_map(Result::ok)
+        .next();
+
+        let log = match log {
+            Some(log) => log,
+            None => return Ok(None),
+        };
+
+        self.controller
+            .parse_and_process(&log) 
+            .context("Can't parse key event log")?;
+
         match self.controller.get_state_for_prefix(issuer)? {
-            Some(state) => {
-                // probably should ask resolver if we have most recent keyconfig
-                Ok(state.current)
-            }
-            None => {
-                // no state, we should ask resolver about kel/state
-                let state_from_resolver = self.get_state_from_resolvers(issuer);
-                Ok(state_from_resolver.await?.current)
-            }
+            Some(state) => Ok(Some(state.current)),
+            None => Ok(None),
         }
     }
 
