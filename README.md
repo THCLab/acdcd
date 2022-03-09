@@ -1,21 +1,5 @@
 # Tda-deamon
 
-```txt
-USAGE:
-    tda-deamon [OPTIONS]
-
-FLAGS:
-    -h, --help       Prints help information
-    -V, --version    Prints version information
-
-OPTIONS:
-        --api-port <api-port>          Daemon API listen port [default: 13434]
-    -d, --kel-db-path <kel-db-path>     [default: controller_db]
-    -r <resolver-address>               [default: http://127.0.0.1:9599]
-    -t <witness-threshold>              [default: 0]
-    -w <witnesses>...                   [default: None]
-```
-
 ## API
 
 ### Creating attestation
@@ -54,6 +38,10 @@ Content-Type: text/plain
     "d":"EIxvZcjD9GaxlWeEUrPmiglmUqPnKQSKOm6NyVCuFS88"
 }-0K-AABAAbn6wxKnkerdoly2yqK6GFQ0UeYMxC-uuLAvs2_TjRZe69f3aW15zY_7AxutVwUuess5WQmwrBrS7DIRGb0JKCA
 ```
+
+Parses the attestation and returns its JSON without the signature.
+
+Returns `403 forbidden` if the signature can't be verified.
 
 ### Listing attestations
 

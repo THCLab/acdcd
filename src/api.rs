@@ -4,7 +4,7 @@ use acdc::{Attestation, Authored, Hashed, PubKey, Signed};
 use keri::prefix::Prefix;
 use serde::Deserialize;
 use tokio::sync::RwLock;
-use warp::Filter;
+use warp::{Filter, Reply};
 
 use crate::{controller::Controller, WitnessConfig};
 
@@ -143,7 +143,7 @@ async fn attest_receive(
     attest_db: AttestationDB,
     controller: Arc<RwLock<Controller>>,
     // dht_node: Arc<RwLock<Node>>,
-) -> Result<warp::reply::Json, ApiError> {
+) -> Result<Box<dyn Reply>, ApiError> {
     // Parse
     let attest = std::str::from_utf8(&attest).map_err(|_| ApiError::InvalidAttestation)?;
     let attest = Signed::<Hashed<Attestation>>::from_signed_json(attest)
@@ -157,7 +157,7 @@ async fn attest_receive(
     );
 
     // Verify
-    {
+    let result = {
         let key_config = controller
             .read()
             .await
@@ -173,16 +173,21 @@ async fn attest_receive(
         };
         attest
             .verify(&keys)
-            .map_err(|_| ApiError::VerificationFailed)?;
-    }
+            .map_err(|_| ApiError::VerificationFailed)
+    };
 
     // Save
-    {
-        let mut attest_db = attest_db.write().await;
-        attest_db.insert(attest_hash, attest.clone());
+    match result {
+        Ok(_) => {
+            let mut attest_db = attest_db.write().await;
+            attest_db.insert(attest_hash, attest.clone());
+            Ok(Box::new(warp::reply::json(&attest.data)))
+        }
+        Err(_) => Ok(Box::new(warp::reply::with_status(
+            warp::reply::json(&attest.data),
+            warp::http::StatusCode::FORBIDDEN,
+        ))),
     }
-
-    Ok(warp::reply::json(&attest.data))
 }
 
 async fn rotate(
