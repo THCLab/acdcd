@@ -53,18 +53,21 @@ impl Controller {
         initial_threshold: Option<SignatureThreshold>,
     ) -> Result<Self> {
         let mut controller = Controller::new(db_path, resolver_addresses)?;
-        let initial_witnesses_prefixes =
-            controller.save_witness_data(&initial_witnesses.unwrap_or_default())?;
+        let initial_witnesses_prefixes = controller
+            .save_witness_data(&initial_witnesses.unwrap_or_default())
+            .context("Saving initial witness data failed")?;
 
-        let icp_event: SignedEventData = (&controller
+        let icp_event = controller
             .controller
-            .incept(Some(initial_witnesses_prefixes.clone()), initial_threshold)?)
-            .into();
+            .incept(Some(initial_witnesses_prefixes.clone()), initial_threshold)
+            .context("Generating incpetion event failed")?;
+        let icp_event: SignedEventData = (&icp_event).into();
         println!("\nInception event generated and signed...");
 
         controller
             .publish_event(&icp_event, &initial_witnesses_prefixes)
-            .await?;
+            .await
+            .context("Publishing inception event failed")?;
 
         println!(
             "\nTDA initialized succesfully. \nTda identifier: {}\n",
@@ -112,7 +115,10 @@ impl Controller {
         event: &SignedEventData,
         witnesses: &[BasicPrefix],
     ) -> Result<()> {
-        let witness_ips = self.get_ips(witnesses).await?;
+        let witness_ips = self
+            .get_ips(witnesses)
+            .await
+            .context("Looking up witness IP address failed")?;
         println!(
             "\ngot witness adresses: {:?}",
             witness_ips
@@ -138,7 +144,8 @@ impl Controller {
                 .body(String::from_utf8(event.to_cesr().unwrap()).unwrap())
                 .send()
         }))
-        .await?
+        .await
+        .context("Publishing event to witness failed")?
         .into_iter()
         .map(|r| r.json::<RespondData>());
 
@@ -159,7 +166,8 @@ impl Controller {
                     .respond_single(rct.as_bytes())
                     .map_err(|e| anyhow::anyhow!(e.to_string()))
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Result<Vec<_>>>()
+            .context("Processing witness receipts failed")?;
 
         try_join_all(witness_ips.iter().map(|ip| {
             client
@@ -167,7 +175,8 @@ impl Controller {
                 .body(witness_receipts.join(""))
                 .send()
         }))
-        .await?;
+        .await
+        .context("Publishing witness receipts failed")?;
         Ok(())
     }
 
@@ -430,7 +439,7 @@ impl Controller {
         };
 
         self.controller
-            .parse_and_process(&log) 
+            .parse_and_process(&log)
             .context("Can't parse key event log")?;
 
         match self.controller.get_state_for_prefix(issuer)? {

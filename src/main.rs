@@ -3,7 +3,7 @@ mod controller;
 
 use std::{collections::HashMap, net::IpAddr, path::PathBuf, sync::Arc};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use controller::Controller;
 use figment::{
     providers::{Format, Json},
@@ -93,7 +93,8 @@ async fn main() -> anyhow::Result<()> {
         bootstrap.witnesses,
         Some(SignatureThreshold::Simple(bootstrap.witness_threshold)),
     )
-    .await?;
+    .await
+    .context("Controller init failed")?;
 
     let controller = Arc::new(RwLock::new(cont));
     let attest_db: AttestationDB = Arc::new(RwLock::new(HashMap::new()));
