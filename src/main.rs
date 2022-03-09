@@ -99,7 +99,8 @@ async fn main() -> anyhow::Result<()> {
     let controller = Arc::new(RwLock::new(cont));
     let attest_db: AttestationDB = Arc::new(RwLock::new(HashMap::new()));
 
-    let routes = setup_routes(controller, attest_db);
+    let cors = warp::cors().allow_any_origin();
+    let routes = setup_routes(controller, attest_db, cors);
 
     warp::serve(routes)
         .run((api_host.parse::<IpAddr>()?, api_port))

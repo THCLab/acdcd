@@ -34,6 +34,7 @@ pub(crate) fn setup_routes(
     controller: Arc<RwLock<Controller>>,
     // dht_node: Arc<RwLock<Node>>,
     attest_db: AttestationDB,
+    cors: warp::cors::Builder,
 ) -> impl warp::Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
     let attest_list_route = warp::path("attestations")
         .and(warp::get())
@@ -87,6 +88,7 @@ pub(crate) fn setup_routes(
         .or(attest_create_route)
         .or(attest_receive_route)
         .or(rotation_route)
+        .with(cors)
 }
 
 fn handle_result(result: Result<impl warp::Reply, impl warp::Reply>) -> impl warp::Reply {
