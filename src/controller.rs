@@ -163,7 +163,7 @@ impl Controller {
             .iter()
             .map(|rct| -> Result<_> {
                 self.controller
-                    .respond_single(rct.as_bytes())
+                    .parse_and_process(rct.as_bytes())
                     .map_err(|e| anyhow::anyhow!(e.to_string()))
             })
             .collect::<Result<Vec<_>>>()
