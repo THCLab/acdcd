@@ -89,6 +89,7 @@ pub(crate) fn setup_routes(
         .or(attest_receive_route)
         .or(rotation_route)
         .with(cors)
+        .with(warp::log(module_path!()))
 }
 
 fn handle_result(result: Result<impl warp::Reply, impl warp::Reply>) -> impl warp::Reply {
@@ -111,7 +112,7 @@ async fn attest_create(
     attest: Attestation,
     attest_db: AttestationDB,
     controller: Arc<RwLock<Controller>>,
-) -> Result<warp::reply::Html<String>, ApiError> {
+) -> Result<impl Reply, ApiError> {
     // Hash
     let attest = Hashed::new(Attestation {
         issuer: controller.read().await.get_prefix().to_str(),
@@ -137,7 +138,11 @@ async fn attest_create(
         attest_db.insert(attest_hash.clone(), attest.clone());
     }
 
-    Ok(warp::reply::html(attest.to_signed_json()))
+    Ok(warp::reply::with_header(
+        attest.to_signed_json(),
+        "Content-Type",
+        "text/plain",
+    ))
 }
 
 async fn attest_receive(
