@@ -2,6 +2,7 @@
 	"api_port": 13434,
 	"api_host": "0.0.0.0",
 	"kel_db_path": "/tmp/path",
+	"oobis_db_path": "/tmp/oobis",
   "bootstrap": {
   	"witness_threshold": 1,
   	"witnesses": [

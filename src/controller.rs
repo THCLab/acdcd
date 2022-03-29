@@ -16,7 +16,7 @@ use keri::{
     prefix::{AttachedSignaturePrefix, BasicPrefix, IdentifierPrefix, Prefix},
     processor::validator::EventValidator,
     signer::{CryptoBox, KeyManager},
-    state::IdentifierState,
+    state::IdentifierState, query::reply_event::ReplyEvent,
 };
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +25,7 @@ use crate::{Url, WitnessConfig};
 #[derive(Debug)]
 pub enum ControllerError {
     MissingIp(BasicPrefix),
+    SomeError(String),
 }
 
 pub struct Controller {
@@ -33,7 +34,7 @@ pub struct Controller {
 }
 
 impl Controller {
-    pub fn new(db_path: &Path) -> Result<Self> {
+    pub fn new(db_path: &Path, oobi_db_path: &Path) -> Result<Self> {
         let db = Arc::new(SledEventDatabase::new(db_path)?);
 
         let key_manager = { Arc::new(Mutex::new(CryptoBox::new()?)) };
@@ -41,16 +42,17 @@ impl Controller {
         let validator = EventValidator::new(db);
         Ok(Controller {
             controller: keri_controller,
-            oobi_manager: OobiManager::new(validator),
+            oobi_manager: OobiManager::new(validator, oobi_db_path),
         })
     }
 
     pub async fn init(
         db_path: &Path,
+        oobi_db_path: &Path,
         initial_witnesses: Option<Vec<WitnessConfig>>,
         initial_threshold: Option<SignatureThreshold>,
     ) -> Result<Self> {
-        let mut controller = Controller::new(db_path)?;
+        let mut controller = Controller::new(db_path, oobi_db_path)?;
         let initial_witnesses_prefixes = controller
             .save_witness_data(&initial_witnesses.unwrap_or_default())
             .await?;
@@ -80,19 +82,18 @@ impl Controller {
             .map(|w| -> Result<Url, ControllerError> {
                 match self
                     .oobi_manager
-                    .get_oobi(&IdentifierPrefix::Basic(w.clone()))
+                    .get_oobi(&IdentifierPrefix::Basic(w.clone())).map_err(|e| ControllerError::SomeError(e.to_string()))?
                 {
-                    Some(oobi) => Ok(Url::parse(&format!(
-                        "http://{}",
-                        &oobi.event.content.data.data.get_url()
-                    ))
-                    .unwrap()),
+                    // TODO for now assume that there is only one oobi in db
+                    Some(oobi) => Ok(
+                        oobi[0].event.content.data.data.get_url()
+                    ),
                     None => Err(ControllerError::MissingIp(w.clone())),
                 }
             })
             .partition(Result::is_ok);
 
-        let adresses_from_resolver = 
+        let _adresses_from_resolver = 
         // try_join_all(
             missing_ips
                 .iter()
@@ -106,7 +107,7 @@ impl Controller {
             );
 
         // Join found ips and asked ips
-        let mut witness_ips: Vec<Url> = found_ips.into_iter().map(Result::unwrap).collect();
+        let witness_ips: Vec<Url> = found_ips.into_iter().map(Result::unwrap).collect();
         // witness_ips.extend(adresses_from_resolver);
         Ok(witness_ips)
     }
@@ -181,25 +182,22 @@ impl Controller {
         witness_config: &[WitnessConfig],
     ) -> Result<Vec<BasicPrefix>> {
         // resolve witnesses oobi
-        // TODO load oobis from config file
         let prefs = witness_config
             .iter()
             .map(|w| {
                 let (prefix, location) = match (w.get_aid(), w.get_location()) {
                     (Ok(aid), Ok(location)) => (aid, location),
                     (Ok(aid), Err(_)) => {
-                        let loc = Url::parse(
-                            &self
+                        let loc = self
                                 .oobi_manager
                                 .get_oobi(&IdentifierPrefix::Basic(aid.clone()))
                                 .unwrap()
+                                .unwrap()[0]
                                 .event
                                 .content
                                 .data
                                 .data
-                                .get_url(),
-                        )
-                        .unwrap();
+                                .get_url();
                         (aid, loc)
                     }
                     (Err(_), Ok(_)) => todo!(),
@@ -211,7 +209,7 @@ impl Controller {
                 w.get_aid().unwrap()
             })
             .collect::<Vec<_>>();
-        self.oobi_manager.load().await?;
+            self.oobi_manager.load().await?;
         Ok(prefs)
     }
 
@@ -388,6 +386,8 @@ impl Controller {
             .oobi_manager
             .get_oobi(prefix)
             .unwrap()
+            // FIXME assume that there is only one oobi in vec
+            .unwrap()[0]
             .event
             .content
             .data
@@ -405,6 +405,8 @@ impl Controller {
             .oobi_manager
             .get_oobi(issuer)
             .unwrap()
+            // FIXME assume that there is only one oobi in vec
+            .unwrap()[0]
             .event
             .content
             .data

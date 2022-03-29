@@ -20,6 +20,7 @@ use self::api::{setup_routes, AttestationDB};
 #[derive(Deserialize)]
 struct Config {
     kel_db_path: PathBuf,
+    oobis_db_path: PathBuf,
     api_host: String,
     /// Daemon API listen port.
     api_port: u16,
@@ -73,6 +74,7 @@ async fn main() -> anyhow::Result<()> {
 
     let Config {
         kel_db_path,
+        oobis_db_path,
         api_host,
         api_port,
         bootstrap,
@@ -88,6 +90,7 @@ async fn main() -> anyhow::Result<()> {
 
     let cont = Controller::init(
         &kel_db_path,
+        &oobis_db_path,
         bootstrap.witnesses,
         Some(SignatureThreshold::Simple(bootstrap.witness_threshold)),
     )
